@@ -893,7 +893,7 @@ pub async fn create_agent_session(
     // non-fatal: the session starts with whatever connected. Each tool's
     // execute closure holds an `Arc` to its connection, keeping it alive.
     #[cfg(feature = "mcp")]
-    let (custom_tools, mcp_section, mcp_connections, mcp_assigned) = {
+    let (custom_tools, mcp_section, mcp_connections) = {
         let mcp_model_registry = model_registry.clone();
         let mut loaded = crate::core::mcp_config::load_mcp_config(&cwd, &agent_dir);
         let mut errors = loaded.errors.clone();
@@ -924,95 +924,29 @@ pub async fn create_agent_session(
                 )),
             }
         }
-        let mut tools = options.custom_tools.take().unwrap_or_default();
-        let mut taken: std::collections::HashSet<String> =
-            tools.iter().map(|tool| tool.name.clone()).collect();
-        let mut resource_connections = Vec::new();
-        let mut resource_exposure = None;
+        let tools = options.custom_tools.take().unwrap_or_default();
         let mut listings = Vec::new();
         let mut mcp_connections = Vec::new();
-        let mut mcp_assigned: std::collections::HashMap<
-            String,
-            std::collections::HashSet<String>,
-        > = std::collections::HashMap::new();
         let token_provider: crate::core::mcp_runtime::ProviderTokenFn =
             std::sync::Arc::new(move |provider: &str| {
                 mcp_model_registry.get_api_key_for_provider(provider)
             });
         for server in loaded.servers.iter().filter(|server| server.config.is_enabled()) {
-            let connection = crate::core::mcp_runtime::McpServerConnection::with_agent_dir_and_token_provider(
-                server.clone(),
-                cwd.clone(),
-                agent_dir.clone(),
-                Some(std::sync::Arc::clone(&token_provider)),
-            );
-            match connection.get_client().await {
-                Ok(_) => {
-                    mcp_connections.push(connection.clone());
-                    let exposure = server.config.exposure();
-                    if matches!(
-                        exposure,
-                        crate::core::mcp_servers::McpExposure::Codemode
-                            | crate::core::mcp_servers::McpExposure::Deferred
-                    ) {
-                        let summary = server
-                            .config
-                            .description
-                            .clone()
-                            .filter(|description| !description.trim().is_empty())
-                            .or_else(|| {
-                                connection
-                                    .instructions()
-                                    .map(|instructions| {
-                                        instructions.lines().next().unwrap_or("").to_string()
-                                    })
-                            })
-                            .unwrap_or_default();
-                        listings.push((server.name.clone(), exposure, summary));
-                    }
-                    if connection.has_resources() {
-                        resource_connections.push(connection.clone());
-                        resource_exposure = Some(match (resource_exposure, exposure) {
-                            (Some(crate::core::mcp_servers::McpExposure::Direct), _) => {
-                                crate::core::mcp_servers::McpExposure::Direct
-                            }
-                            (_, crate::core::mcp_servers::McpExposure::Direct) => {
-                                crate::core::mcp_servers::McpExposure::Direct
-                            }
-                            (Some(crate::core::mcp_servers::McpExposure::Codemode), _) => {
-                                crate::core::mcp_servers::McpExposure::Codemode
-                            }
-                            (_, crate::core::mcp_servers::McpExposure::Codemode) => {
-                                crate::core::mcp_servers::McpExposure::Codemode
-                            }
-                            _ => crate::core::mcp_servers::McpExposure::Deferred,
-                        });
-                    }
-                    for tool in connection.tools() {
-                        let name = crate::core::mcp_tools::create_mcp_tool_name(
-                            &server.name,
-                            &tool.name,
-                            |candidate| taken.contains(candidate),
-                        );
-                        taken.insert(name.clone());
-                        mcp_assigned
-                            .entry(server.name.clone())
-                            .or_default()
-                            .insert(name.clone());
-                        let exposure = server.config.tool_exposure(&tool.name);
-                        tools.push(crate::core::mcp_tools::create_mcp_tool_definition(
-                            &connection, &tool, name, exposure,
-                        ));
-                    }
-                }
-                Err(error) => errors.push(error),
+            let connection =
+                crate::core::mcp_runtime::McpServerConnection::with_agent_dir_and_token_provider(
+                    server.clone(),
+                    cwd.clone(),
+                    agent_dir.clone(),
+                    Some(std::sync::Arc::clone(&token_provider)),
+                );
+            if mcp_config_has_indirect(&server.config) {
+                listings.push((
+                    server.name.clone(),
+                    server.config.exposure(),
+                    server.config.description.clone().unwrap_or_default(),
+                ));
             }
-        }
-        if !resource_connections.is_empty() {
-            tools.extend(crate::core::mcp_resources::create_mcp_resource_tool_definitions(
-                std::sync::Arc::new(resource_connections),
-                resource_exposure.unwrap_or(crate::core::mcp_servers::McpExposure::Deferred),
-            ));
+            mcp_connections.push(connection);
         }
         for error in &errors {
             eprintln!("[pi] MCP: {error}");
@@ -1021,16 +955,11 @@ pub async fn create_agent_session(
             if tools.is_empty() { None } else { Some(tools) },
             crate::core::mcp_servers::render_mcp_servers_section(&listings),
             mcp_connections,
-            mcp_assigned,
         )
     };
     #[cfg(not(feature = "mcp"))]
-    let (custom_tools, mcp_section, mcp_connections, mcp_assigned) = (
-        options.custom_tools,
-        None,
-        Vec::new(),
-        std::collections::HashMap::new(),
-    );
+    let (custom_tools, mcp_section, mcp_connections) =
+        (options.custom_tools, None, Vec::new());
 
     let session_options = AgentSessionConfig {
         cwd: cwd.clone(),
@@ -1080,82 +1009,59 @@ pub async fn create_agent_session(
     }
 
     #[cfg(feature = "mcp")]
-    session.set_mcp_connections(mcp_connections.clone());
+    {
+        session.set_mcp_connections(mcp_connections.clone());
+        if !mcp_connections.is_empty() {
+            use std::collections::HashSet;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::{Arc, Mutex};
 
-    #[cfg(feature = "mcp")]
-    if !mcp_connections.is_empty() {
-        use std::collections::HashSet;
-        use std::sync::{Arc, Mutex};
-
-        let manager = session.runtime_tools();
-        let taken = Arc::new(Mutex::new(
-            session
-                .get_all_tools()
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect::<HashSet<_>>(),
-        ));
-        let mut assigned = mcp_assigned;
-        for connection in mcp_connections {
-            let server_name = connection.name().to_string();
-            let config = connection.entry().config.clone();
-            let weak = connection.downgrade();
-            let manager = Arc::clone(&manager);
-            let taken = Arc::clone(&taken);
-            let previous = Arc::new(Mutex::new(
-                assigned.remove(&server_name).unwrap_or_default(),
+            let manager = session.runtime_tools();
+            // `tool_search` must exist before the first prompt for configured
+            // deferred/codemode servers, even though their tools connect later.
+            if mcp_connections
+                .iter()
+                .any(|connection| mcp_config_has_indirect(&connection.entry().config))
+            {
+                manager.ensure_tool_search().await;
+            }
+            let taken = Arc::new(Mutex::new(
+                session
+                    .get_all_tools()
+                    .into_iter()
+                    .map(|tool| tool.name)
+                    .collect::<HashSet<_>>(),
             ));
-            connection.set_change_listener(Some(Arc::new(move |tools| {
-                let manager = Arc::clone(&manager);
-                let taken = Arc::clone(&taken);
-                let previous = Arc::clone(&previous);
-                let weak = weak.clone();
-                let server_name = server_name.clone();
-                let config = config.clone();
-                tokio::spawn(async move {
-                    let Some(connection) =
-                        crate::core::mcp_runtime::McpServerConnection::upgrade(&weak)
-                    else {
-                        return;
-                    };
-                    let mut definitions = Vec::new();
-                    let mut new_names = HashSet::new();
-                    let removed = {
-                        let mut taken =
-                            taken.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let mut previous =
-                            previous.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        for name in previous.iter() {
-                            taken.remove(name);
-                        }
-                        for tool in &tools {
-                            let name = crate::core::mcp_tools::create_mcp_tool_name(
-                                &server_name,
-                                &tool.name,
-                                |candidate| taken.contains(candidate),
-                            );
-                            taken.insert(name.clone());
-                            new_names.insert(name.clone());
-                            let exposure = config.tool_exposure(&tool.name);
-                            definitions.push(
-                                crate::core::mcp_tools::create_mcp_tool_definition(
-                                    &connection, tool, name, exposure,
-                                ),
-                            );
-                        }
-                        let removed: Vec<String> =
-                            previous.difference(&new_names).cloned().collect();
-                        *previous = new_names;
-                        removed
-                    };
-                    manager.unregister(&removed).await;
-                    manager.register(definitions).await;
-                });
-            })));
+            let all_connections = Arc::new(mcp_connections.clone());
+            let resource_tools = Arc::new(AtomicBool::new(false));
+            let mut direct_waiters = Vec::new();
+            for connection in mcp_connections.iter().cloned() {
+                let has_direct = mcp_config_has_direct(&connection.entry().config);
+                let handle = tokio::spawn(load_mcp_connection(
+                    connection,
+                    Arc::clone(&manager),
+                    Arc::clone(&taken),
+                    Arc::clone(&all_connections),
+                    Arc::clone(&resource_tools),
+                ));
+                if has_direct {
+                    direct_waiters.push(handle);
+                }
+            }
+            // TS waits for direct tools before the first prompt; cap the wait so
+            // a slow server cannot hold up session startup indefinitely.
+            if !direct_waiters.is_empty() {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    futures::future::join_all(direct_waiters),
+                )
+                .await;
+            }
+            let _ = Ordering::SeqCst;
         }
     }
     #[cfg(not(feature = "mcp"))]
-    let _ = (&mcp_connections, &mcp_assigned);
+    let _ = &mcp_connections;
 
     // Load persisted messages into agent state if restoring from a session file
     if session.get_session_manager().get_session_file().is_some() {
@@ -1193,6 +1099,149 @@ pub async fn create_agent_session(
             extensions_result,
         },
     ))
+}
+
+#[cfg(feature = "mcp")]
+pub(crate) fn mcp_config_has_direct(config: &crate::core::mcp_servers::McpServerConfig) -> bool {
+    config.exposure() == crate::core::mcp_servers::McpExposure::Direct
+        || config
+            .tool_exposure
+            .values()
+            .any(|exposure| *exposure == crate::core::mcp_servers::McpExposure::Direct)
+}
+
+#[cfg(feature = "mcp")]
+pub(crate) fn mcp_config_has_indirect(config: &crate::core::mcp_servers::McpServerConfig) -> bool {
+    let is_indirect = |exposure: crate::core::mcp_servers::McpExposure| {
+        matches!(
+            exposure,
+            crate::core::mcp_servers::McpExposure::Codemode
+                | crate::core::mcp_servers::McpExposure::Deferred
+        )
+    };
+    is_indirect(config.exposure())
+        || config.tool_exposure.values().any(|exposure| is_indirect(*exposure))
+}
+
+#[cfg(feature = "mcp")]
+pub(crate) fn widest_mcp_exposure(
+    connections: &[crate::core::mcp_runtime::McpServerConnection],
+) -> crate::core::mcp_servers::McpExposure {
+    use crate::core::mcp_servers::McpExposure;
+    let mut exposure = McpExposure::Deferred;
+    for connection in connections.iter().filter(|connection| connection.has_resources()) {
+        match connection.entry().config.exposure() {
+            McpExposure::Direct => return McpExposure::Direct,
+            McpExposure::Codemode => exposure = McpExposure::Codemode,
+            McpExposure::Deferred | McpExposure::Hidden => {}
+        }
+    }
+    exposure
+}
+
+/// Connect one server in the background and register its tools.
+#[cfg(feature = "mcp")]
+pub(crate) async fn load_mcp_connection(
+    connection: crate::core::mcp_runtime::McpServerConnection,
+    manager: std::sync::Arc<crate::core::runtime_tools::RuntimeToolManager>,
+    taken: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    all_connections: std::sync::Arc<
+        Vec<crate::core::mcp_runtime::McpServerConnection>,
+    >,
+    resource_tools: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    let server_name = connection.name().to_string();
+    let config = connection.entry().config.clone();
+    if let Err(error) = connection.get_client().await {
+        eprintln!("[pi] MCP: {error}");
+        return;
+    }
+    let mut assigned = std::collections::HashSet::new();
+    let definitions = {
+        let mut taken = taken
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut definitions = Vec::new();
+        for tool in connection.tools() {
+            let name = crate::core::mcp_tools::create_mcp_tool_name(
+                &server_name,
+                &tool.name,
+                |candidate| taken.contains(candidate),
+            );
+            taken.insert(name.clone());
+            assigned.insert(name.clone());
+            let exposure = config.tool_exposure(&tool.name);
+            definitions.push(crate::core::mcp_tools::create_mcp_tool_definition(
+                &connection, &tool, name, exposure,
+            ));
+        }
+        definitions
+    };
+    manager.register(definitions).await;
+    if connection.has_resources() && !resource_tools.swap(true, Ordering::SeqCst) {
+        let exposure = widest_mcp_exposure(&all_connections);
+        let definitions =
+            crate::core::mcp_resources::create_mcp_resource_tool_definitions(
+                Arc::clone(&all_connections),
+                exposure,
+            );
+        manager.register(definitions).await;
+    }
+    let weak = connection.downgrade();
+    let previous = Arc::new(Mutex::new(assigned));
+    let manager = Arc::clone(&manager);
+    let taken = Arc::clone(&taken);
+    let config = config.clone();
+    connection.set_change_listener(Some(Arc::new(move |tools| {
+        let manager = Arc::clone(&manager);
+        let taken = Arc::clone(&taken);
+        let previous = Arc::clone(&previous);
+        let weak = weak.clone();
+        let server_name = server_name.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            let Some(connection) =
+                crate::core::mcp_runtime::McpServerConnection::upgrade(&weak)
+            else {
+                return;
+            };
+            let mut definitions = Vec::new();
+            let mut new_names = std::collections::HashSet::new();
+            let removed = {
+                let mut taken =
+                    taken.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut previous =
+                    previous.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                for name in previous.iter() {
+                    taken.remove(name);
+                }
+                for tool in &tools {
+                    let name = crate::core::mcp_tools::create_mcp_tool_name(
+                        &server_name,
+                        &tool.name,
+                        |candidate| taken.contains(candidate),
+                    );
+                    taken.insert(name.clone());
+                    new_names.insert(name.clone());
+                    let exposure = config.tool_exposure(&tool.name);
+                    definitions.push(
+                        crate::core::mcp_tools::create_mcp_tool_definition(
+                            &connection, tool, name, exposure,
+                        ),
+                    );
+                }
+                let removed: Vec<String> =
+                    previous.difference(&new_names).cloned().collect();
+                *previous = new_names;
+                removed
+            };
+            manager.unregister(&removed).await;
+            manager.register(definitions).await;
+        });
+    })));
 }
 
 #[cfg(test)]
@@ -1544,7 +1593,7 @@ mod tests {
     /// `mcp.json` servers are connected during session creation and their tools
     /// are registered with the configured exposure.
     #[tokio::test]
-    async fn mcp_json_tools_are_registered_at_session_start() {
+    async fn mcp_json_tools_are_registered_in_background() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = temp_cwd(&tmp);
         let agent_dir = tmp.path().join("agent");
@@ -1596,9 +1645,15 @@ done
         .await
         .unwrap();
 
-        let definition = session
-            .get_tool_definition("mcp__echo__echo")
-            .expect("MCP tool registered");
+        let mut definition = None;
+        for _ in 0..100 {
+            definition = session.get_tool_definition("mcp__echo__echo");
+            if definition.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let definition = definition.expect("MCP tool registered in the background");
         assert_eq!(
             definition.exposure,
             pi_extension_api::ToolExposure::Deferred
@@ -1607,6 +1662,69 @@ done
             .get_all_tools()
             .iter()
             .any(|tool| tool.name == "mcp__echo__echo"));
+    }
+
+    /// A slow `codemode` server must not block session startup; only `direct`
+    /// servers are waited for (and only up to the cap).
+    #[tokio::test]
+    async fn slow_indirect_mcp_server_does_not_block_startup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = temp_cwd(&tmp);
+        let agent_dir = tmp.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let script = tmp.path().join("server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      sleep 2
+      id=$(printf '%s' "$line" | sed -E 's/.*"id":([^,}]+).*/\1/')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"sh","version":"1"}}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("mcp.json"),
+            serde_json::to_string(&serde_json::json!({
+                "mcpServers": {
+                    "slow": {
+                        "command": "/bin/sh",
+                        "args": [script.to_string_lossy()],
+                        "exposure": "codemode"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = registry_with(
+            vec![test_model("testp", "m1", false)],
+            "testp",
+            &tmp.path().join("models.json"),
+        );
+        let settings = SettingsManager::create(&cwd, agent_dir.to_str());
+        let started = std::time::Instant::now();
+        let (_session, _result) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            create_agent_session(CreateAgentSessionOptions {
+                cwd: cwd.clone(),
+                agent_dir: Some(agent_dir.to_string_lossy().to_string()),
+                model: Some(test_model("testp", "m1", false)),
+                enable_extensions: false,
+                settings_manager: Some(settings),
+                model_registry: Some(registry),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("session startup is not blocked by a codemode server")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     /// `notifications/tools/list_changed` adds new tools to the live session.

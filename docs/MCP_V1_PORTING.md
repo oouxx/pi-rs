@@ -16,12 +16,17 @@
 >   MCP tool → pi tool、结果截断/临时文件、resources 三工具、OAuth 凭据存储 + 刷新锁 +
 >   auth provider、`mcp.log`、system prompt `mcp_servers` section、`/mcp` 菜单序列、
 >   `pi-rs mcp login/logout`、静态 `registerMcpServer`、legacy SSE transport。
-> - ✅ ACP `mcpServers` 已切到新 runtime；旧 rmcp 实现与依赖已删除。
+> - ✅ ACP `mcpServers` 已切到新 runtime：`session/new` 只创建连接对象，MCP 后台连接；
+>   首个 prompt 通过 `set_pre_prompt_wait` 等待 direct 工具注册（10s 上限）。旧 rmcp
+>   实现与依赖已删除。
 > - ✅ `auth.provider`：runtime 通过 model registry 的 provider token 回调接入。
 > - ✅ `tools/list_changed`：`core/runtime_tools.rs` 在运行时注册/移除工具，同步
 >   `tool_search` 索引与 active 集合。
 > - ✅ `/mcp` TUI：`AppMode::Panel` 多级管理器（服务列表、服务详情、工具、Exposure、
 >   登录、实时状态），复用会话 MCP 连接，交互与信息层级对齐原版 `McpManagerView`。
+> - ✅ 启动性能：MCP 连接在后台执行，只有配置了 `direct` 工具的服务在启动时
+>   等待（10s 上限）；`codemode`/`deferred` 工具连接后动态注册，`tool_search`
+>   在首个 prompt 前就绪。
 > - ⏳ 待做：Phase 8 文档收尾；codemode 不在范围、CIMD 默认禁用。
 >
 > TS 参考：`origin/main` 的 `packages/mcp`（v1.0.0 形态）与

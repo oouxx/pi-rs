@@ -304,7 +304,9 @@ fn find_server<'a>(
     connections: &'a [McpServerConnection],
     name: &str,
 ) -> Option<&'a McpServerConnection> {
-    connections.iter().find(|connection| connection.name() == name)
+    connections
+        .iter()
+        .find(|connection| connection.has_resources() && connection.name() == name)
 }
 
 async fn list_resources_payload(
@@ -321,7 +323,11 @@ async fn list_resources_payload(
     if cursor.is_some() {
         return Err("cursor can only be used when a server is specified".to_string());
     }
-    let mut servers = connections.to_vec();
+    let mut servers: Vec<McpServerConnection> = connections
+        .iter()
+        .filter(|server| server.has_resources())
+        .cloned()
+        .collect();
     servers.sort_by(|a, b| a.name().cmp(b.name()));
     let results = join_all(servers.iter().map(|server| server.list_resources())).await;
     let mut resources = Vec::new();
@@ -374,7 +380,11 @@ async fn list_templates_payload(
     if cursor.is_some() {
         return Err("cursor can only be used when a server is specified".to_string());
     }
-    let mut servers = connections.to_vec();
+    let mut servers: Vec<McpServerConnection> = connections
+        .iter()
+        .filter(|server| server.has_resources())
+        .cloned()
+        .collect();
     servers.sort_by(|a, b| a.name().cmp(b.name()));
     let results = join_all(
         servers

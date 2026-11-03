@@ -708,6 +708,9 @@ impl SessionEventUnsubscribeHandle {
 // ============================================================================
 
 #[allow(clippy::type_complexity)]
+/// One-shot readiness wait before the first prompt (MCP direct tools).
+pub type PrePromptWait = Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 pub struct AgentSession {
     agent: Arc<Agent>,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
@@ -746,6 +749,8 @@ pub struct AgentSession {
     mcp_connections: Arc<
         std::sync::Mutex<Vec<crate::core::mcp_runtime::McpServerConnection>>,
     >,
+    /// One-shot wait before the first prompt (ACP direct MCP tools).
+    pre_prompt_wait: std::sync::Mutex<Option<PrePromptWait>>,
     /// Tool definitions registry, matching TS `_toolDefinitions` (used by
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
@@ -1589,6 +1594,7 @@ impl AgentSession {
                 prepare_arguments: None,
                 execute,
             });
+            runtime_tools.mark_tool_search_present();
             tool_exposures.insert(
                 "tool_search".to_string(),
                 pi_extension_api::ToolExposure::Direct,
@@ -2491,6 +2497,7 @@ impl AgentSession {
             runtime_tools,
             #[cfg(feature = "mcp")]
             mcp_connections: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pre_prompt_wait: std::sync::Mutex::new(None),
             tool_definitions,
             resource_loader: std::sync::Mutex::new(options.resource_loader),
             system_prompt_options: Some({
@@ -3556,6 +3563,14 @@ impl AgentSession {
         Arc::clone(&self.runtime_tools)
     }
 
+    /// Install a one-shot wait that runs before the first prompt.
+    pub fn set_pre_prompt_wait(&self, wait: PrePromptWait) {
+        *self
+            .pre_prompt_wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(wait);
+    }
+
     /// Replace the MCP connections exposed to the `/mcp` manager.
     #[cfg(feature = "mcp")]
     pub fn set_mcp_connections(
@@ -4612,6 +4627,15 @@ impl AgentSession {
                     options,
                 });
             return Ok(());
+        }
+        // Wait once for MCP direct tools that are still connecting (ACP).
+        let wait = self
+            .pre_prompt_wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(wait) = wait {
+            wait().await;
         }
         // Apply queued JS extension actions before the turn starts.
         self.drain_extension_actions().await;

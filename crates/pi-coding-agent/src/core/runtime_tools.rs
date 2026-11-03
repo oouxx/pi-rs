@@ -30,6 +30,7 @@ pub struct RuntimeToolManager {
     definitions: RwLock<HashMap<String, ToolDefinition>>,
     search: RwLock<SearchIndex>,
     registered: AtomicBool,
+    tool_search_present: AtomicBool,
 }
 
 impl std::fmt::Debug for RuntimeToolManager {
@@ -70,6 +71,17 @@ type AgentToolExecuteFn = Arc<
             >,
         > + Send
         + Sync,
+>;
+
+type ToolSearchFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    pi_agent_core::types::AgentToolResult<Value>,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
+            > + Send,
+    >,
 >;
 
 fn agent_tool_from_definition(definition: &ToolDefinition) -> DynTool {
@@ -123,6 +135,145 @@ impl RuntimeToolManager {
         *self.agent.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(agent);
     }
 
+    /// Mark that `tool_search` was registered by the session's initial setup.
+    pub fn mark_tool_search_present(&self) {
+        self.tool_search_present.store(true, Ordering::SeqCst);
+    }
+
+    /// Register `tool_search` on demand for tools that appear after startup.
+    pub async fn ensure_tool_search(self: &Arc<Self>) {
+        if self.tool_search_present.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let manager = Arc::clone(self);
+        let execute: AgentToolExecuteFn = Arc::new(
+            move |_tool_call_id: String,
+                  params: Value,
+                  _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                  _on_update: Option<
+                Arc<dyn Fn(pi_agent_core::types::AgentToolResult<Value>) + Send + Sync>,
+            >| {
+                let manager = Arc::clone(&manager);
+                let future: ToolSearchFuture = Box::pin(async move {
+                    let query = params
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "query must be a string".to_string())?
+                        .to_string();
+                    if query.trim().is_empty() {
+                        return Err("query must not be empty".to_string().into());
+                    }
+                    let limit = params
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .map(|limit| limit as usize)
+                        .unwrap_or(8);
+                    if limit == 0 {
+                        return Err("limit must be a positive integer".to_string().into());
+                    }
+                    let agent = manager
+                        .agent
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone()
+                        .ok_or_else(|| "tool_search is not ready".to_string())?;
+                    let state = agent.state().await;
+                    let active: HashSet<String> =
+                        state.tools.iter().map(|tool| tool.name.clone()).collect();
+                    let matches = manager.search(&query, &active, limit);
+                    let additions: Vec<Arc<DynTool>> =
+                        matches.iter().map(|(_, tool)| Arc::clone(tool)).collect();
+                    let names: Vec<String> =
+                        matches.iter().map(|(name, _)| name.clone()).collect();
+                    if additions.is_empty() {
+                        return Ok(pi_agent_core::types::AgentToolResult {
+                            content: vec![pi_agent_core::pi_ai_types::text_block(
+                                "No matching tools found.".to_string(),
+                            )],
+                            details: json!({"loaded": []}),
+                            usage: None,
+                            terminate: None,
+                        });
+                    }
+                    agent.add_tools(additions).await;
+                    let text = format!(
+                        "Loaded {} tool{}. They are available from your next call:
+{}",
+                        names.len(),
+                        if names.len() == 1 { "" } else { "s" },
+                        names
+                            .iter()
+                            .map(|name| format!("- {name}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    Ok(pi_agent_core::types::AgentToolResult {
+                        content: vec![pi_agent_core::pi_ai_types::text_block(text)],
+                        details: json!({"loaded": names}),
+                        usage: None,
+                        terminate: None,
+                    })
+                });
+                future
+            },
+        );
+        let definition = ToolDefinition {
+            name: "tool_search".to_string(),
+            label: Some("tool_search".to_string()),
+            description: "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nSome of the tools, such as tools of MCP servers, may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search`.".to_string(),
+            prompt_snippet: Some(
+                "Search for tools that are not loaded yet and load the matches".to_string(),
+            ),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query for deferred tools."},
+                    "limit": {"type": "number", "description": "Maximum number of tools to return. Defaults to 8."}
+                },
+                "required": ["query"]
+            })),
+            exposure: ToolExposure::Direct,
+            ..Default::default()
+        };
+        let tool = Arc::new(pi_agent_core::types::AgentTool {
+            constrained_sampling: None,
+            name: definition.name.clone(),
+            description: definition.description.clone(),
+            label: definition.label.clone().unwrap_or_default(),
+            prompt_snippet: definition.prompt_snippet.clone(),
+            prompt_guidelines: None,
+            parameters_schema: definition
+                .parameters
+                .clone()
+                .unwrap_or_else(|| json!({"type": "object", "properties": {}, "required": []})),
+            execution_mode: None,
+            prepare_arguments: None,
+            execute,
+        }) as Arc<DynTool>;
+        {
+            let mut registry = self
+                .registry
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !registry.iter().any(|tool| tool.name == "tool_search") {
+                registry.push(Arc::clone(&tool));
+            }
+            let mut definitions = self
+                .definitions
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            definitions.insert("tool_search".to_string(), definition);
+        }
+        let agent = self
+            .agent
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(agent) = agent {
+            agent.add_tools(vec![tool]).await;
+        }
+    }
+
     /// Add initial searchable tools to the index.
     pub fn seed_search(&self, documents: Vec<ToolSearchDocument>, registry: HashMap<String, Arc<DynTool>>) {
         let mut search = self
@@ -135,9 +286,12 @@ impl RuntimeToolManager {
     }
 
     /// Register or replace tools.
-    pub async fn register(&self, definitions: Vec<ToolDefinition>) {
+    pub async fn register(self: &Arc<Self>, definitions: Vec<ToolDefinition>) {
         if definitions.is_empty() {
             return;
+        }
+        if definitions.iter().any(|definition| searchable(definition.exposure)) {
+            self.ensure_tool_search().await;
         }
         let mut direct_tools = Vec::new();
         {
@@ -327,7 +481,7 @@ mod tests {
 
     #[test]
     fn searchable_tools_enter_the_index() {
-        let manager = RuntimeToolManager::default();
+        let manager = std::sync::Arc::new(RuntimeToolManager::default());
         manager.seed_search(Vec::new(), HashMap::new());
         futures::executor::block_on(manager.register(vec![definition(
             "search_me",
@@ -341,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_removes_definition() {
-        let manager = RuntimeToolManager::default();
+        let manager = std::sync::Arc::new(RuntimeToolManager::default());
         manager
             .register(vec![definition("gone", ToolExposure::Deferred)])
             .await;

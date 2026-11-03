@@ -24,12 +24,20 @@ pi-rs 当前以 `.version` 记录的版本作为对齐和验收基准。同级 `
 | 范围 | 当前状态 |
 | --- | --- |
 | Anthropic/OpenAI 核心 Agent 路径 | 继续对齐，优先级高 |
-| session、model runtime、MCP 基础行为 | 部分已实现，需要对照 `../pi` 当前版本重新审计 |
+| session、model runtime、MCP | MCP v1.0.0 功能已实现（不含 codemode、CIMD 默认禁用）；差异见 `crates/pi-coding-agent/DEVIATIONS.md` #36 |
 | OAuth、完整 provider/model catalog | 有界支持；差异见各 crate `DEVIATIONS.md` |
 | codemode、image/classifier | 未完整移植，暂不作为核心里程碑 |
 | client/server/protocol | 不在当前核心范围 |
 | Durable/Pico/Chord | 不在当前核心范围 |
 | TUI 组件逐行复刻 | 不在范围；核心交互状态机仍需保持一致 |
+
+## MCP v1.0.0 复刻（2026-11-03）
+
+- 新增 `crates/pi-mcp`：自实现 JSON-RPC、stdio、streamable HTTP、legacy SSE、OAuth。
+- `pi-coding-agent` 接入完整 `mcp.json`、exposure、resources、OAuth、`/mcp`、
+  `tools/list_changed` 动态工具注册；ACP `mcpServers` 同步切换。
+- 有意不实现 codemode；CIMD 默认禁用（DCR + 预注册 client）。
+- 详见 `docs/MCP_V1_PORTING.md`、`crates/pi-coding-agent/DEVIATIONS.md` #36。
 
 ## v0.82.1 → v0.87.1 对齐计划（已收口，2026-10-12 起）
 

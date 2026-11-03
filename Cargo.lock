@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "pi-agent-core"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ai"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "pi-cli"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "base64 0.22.1",
  "colored",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extension-api"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "async-trait",
  "futures",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "pi-extensions"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "async-trait",
  "pi-extension-api",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "pi-mcp"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "pi-tui"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "anstyle",
  "arboard",
@@ -5017,7 +5017,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.87.12"
+version = "1.87.13"
 dependencies = [
  "anyhow",
  "regex",

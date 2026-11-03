@@ -12,14 +12,23 @@
 //! - `mcp remove <name>`
 //! - `mcp enable <name>` / `mcp disable <name>`
 
+use std::io::IsTerminal;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use colored::*;
 use pi_coding_agent::config;
-use pi_coding_agent::core::mcp::McpTransportSpec;
 use pi_coding_agent::core::mcp_config::{
-    self, global_config_path, project_config_path, LoadedServer,
+    self, global_config_path, project_config_path, LoadedServer, McpServerConfig,
 };
+use pi_coding_agent::core::mcp_oauth::{
+    self, McpOAuthCredentialStore, McpOAuthSettings, McpSignInPrompt,
+};
+use pi_coding_agent::core::mcp_runtime::{McpServerConnection, McpServerState};
+use pi_coding_agent::utils::open_browser::open_browser;
+use tokio_util::sync::CancellationToken;
+use url::Url;
 
 const USAGE: &str = "\
 Usage: pi-rs mcp <command>
@@ -31,9 +40,13 @@ Commands:
   remove <name>                          Remove a server from the file that defines it
   enable <name>                          Enable a server
   disable <name>                         Disable a server
+  login <name> [--timeout <seconds>]     Sign in to an OAuth MCP server
+  logout <name>                          Delete stored OAuth credentials
 
 Options:
-  --global   Target the global {agent_dir}/mcp.json instead of the project file";
+  --global   Target the global {agent_dir}/mcp.json instead of the project file
+  --exposure <mode>  Set codemode, deferred, direct, or hidden
+  --description <text>  Describe what the server offers";
 
 /// Handle `pi-rs mcp ...`. Returns a process exit code.
 pub fn handle_mcp_command(args: &[String]) -> i32 {
@@ -53,6 +66,8 @@ pub fn handle_mcp_command(args: &[String]) -> i32 {
         "remove" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::Remove),
         "enable" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::SetEnabled(true)),
         "disable" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::SetEnabled(false)),
+        "login" => cmd_login(&args[1..], &cwd, &agent_dir),
+        "logout" => cmd_logout(&args[1..], &cwd, &agent_dir),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             0
@@ -65,16 +80,18 @@ pub fn handle_mcp_command(args: &[String]) -> i32 {
     }
 }
 
-fn describe_transport(transport: &McpTransportSpec) -> String {
-    match transport {
-        McpTransportSpec::Stdio { command, args, .. } => {
-            let mut parts = vec![command.clone()];
-            parts.extend(args.iter().cloned());
-            parts.join(" ")
-        }
-        McpTransportSpec::Http { url, .. } => format!("http {url}"),
-        McpTransportSpec::Sse { url, .. } => format!("sse {url}"),
+fn describe_transport(config: &McpServerConfig) -> String {
+    if let Some(command) = &config.command {
+        let mut parts = vec![command.clone()];
+        parts.extend(config.args.clone().unwrap_or_default());
+        return parts.join(" ");
     }
+    let kind = if config.kind.as_deref() == Some("sse") {
+        "sse"
+    } else {
+        "http"
+    };
+    format!("{kind} {}", config.url.as_deref().unwrap_or_default())
 }
 
 fn cmd_list(cwd: &str, agent_dir: &str) -> i32 {
@@ -88,17 +105,18 @@ fn cmd_list(cwd: &str, agent_dir: &str) -> i32 {
         return 0;
     }
     for server in &servers {
-        let state = if server.enabled {
+        let state = if server.config.is_enabled() {
             "enabled".green().to_string()
         } else {
             "disabled".dimmed().to_string()
         };
         println!(
-            "{:<16} {:<8} {:<7} {}",
+            "{:<16} {:<8} {:<7} {:<8} {}",
             server.name,
             server.scope.as_str(),
             state,
-            describe_transport(&server.transport)
+            server.config.exposure(),
+            describe_transport(&server.config)
         );
     }
     for error in &errors {
@@ -120,6 +138,8 @@ fn cmd_add(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
     let mut url: Option<String> = None;
     let mut sse = false;
     let mut headers: Vec<(String, String)> = Vec::new();
+    let mut exposure: Option<String> = None;
+    let mut description: Option<String> = None;
     let mut name: Option<String> = None;
     let mut command: Vec<String> = Vec::new();
     let mut after_separator = false;
@@ -149,6 +169,12 @@ fn cmd_add(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
             }
         } else if !after_separator && arg == "--sse" {
             sse = true;
+        } else if !after_separator && arg == "--exposure" {
+            i += 1;
+            exposure = args.get(i).cloned();
+        } else if !after_separator && arg == "--description" {
+            i += 1;
+            description = args.get(i).cloned();
         } else if !after_separator && arg == "--" {
             after_separator = true;
         } else if name.is_none() {
@@ -178,6 +204,12 @@ fn cmd_add(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
                     .collect();
                 map.insert("headers".to_string(), serde_json::Value::Object(headers));
             }
+            if let Some(exposure) = &exposure {
+                map.insert("exposure".to_string(), serde_json::json!(exposure));
+            }
+            if let Some(description) = &description {
+                map.insert("description".to_string(), serde_json::json!(description));
+            }
             serde_json::Value::Object(map)
         }
         None => {
@@ -192,6 +224,12 @@ fn cmd_add(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
             map.insert("command".to_string(), serde_json::json!(command[0]));
             if command.len() > 1 {
                 map.insert("args".to_string(), serde_json::json!(command[1..]));
+            }
+            if let Some(exposure) = &exposure {
+                map.insert("exposure".to_string(), serde_json::json!(exposure));
+            }
+            if let Some(description) = &description {
+                map.insert("description".to_string(), serde_json::json!(description));
             }
             serde_json::Value::Object(map)
         }
@@ -267,6 +305,178 @@ fn cmd_edit(args: &[String], cwd: &str, agent_dir: &str, edit: Edit) -> i32 {
             eprintln!("{} {e}", "Error:".red().bold());
             1
         }
+    }
+}
+
+fn cmd_login(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
+    let mut name = None;
+    let mut timeout_secs = 300u64;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--timeout" => {
+                index += 1;
+                match args.get(index).and_then(|value| value.parse::<u64>().ok()) {
+                    Some(seconds) if seconds > 0 => timeout_secs = seconds,
+                    _ => {
+                        eprintln!("{} --timeout must be a positive number of seconds", "Error:".red().bold());
+                        return 1;
+                    }
+                }
+            }
+            value if name.is_none() => name = Some(value.to_string()),
+            value => {
+                eprintln!("{} unexpected argument {value}", "Error:".red().bold());
+                return 1;
+            }
+        }
+        index += 1;
+    }
+    let Some(name) = name else {
+        eprintln!("{} Usage: pi-rs mcp login <server> [--timeout <seconds>]", "Error:".red().bold());
+        return 1;
+    };
+    let loaded = mcp_config::load_mcp_config(cwd, agent_dir);
+    let Some(server) = loaded.servers.iter().find(|server| server.name == name) else {
+        eprintln!("{} No MCP server named \"{name}\"", "Error:".red().bold());
+        return 1;
+    };
+    if !mcp_oauth::server_uses_oauth(&server.config) {
+        eprintln!(
+            "{} MCP server \"{name}\" does not use OAuth. Only HTTP servers without an Authorization header do.",
+            "Error:".red().bold()
+        );
+        return 1;
+    }
+    let Some(url) = server.config.url.as_deref().and_then(|url| Url::parse(url).ok()) else {
+        eprintln!("{} MCP server \"{name}\" has an invalid URL", "Error:".red().bold());
+        return 1;
+    };
+    let settings = match McpOAuthSettings::from_config(server.config.oauth.as_ref(), &name) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("{} {error}", "Error:".red().bold());
+            return 1;
+        }
+    };
+    let store = McpOAuthCredentialStore::new(Path::new(agent_dir)).for_server(&name, url.as_str());
+    let connection = McpServerConnection::with_agent_dir(server.clone(), cwd, agent_dir);
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("{} {error}", "Error:".red().bold());
+            return 1;
+        }
+    };
+    runtime.block_on(async move {
+        // Connecting first tells us whether a sign-in is actually needed.
+        match connection.get_client().await {
+            Ok(_) => {
+                println!("Already signed in to MCP server \"{name}\".");
+                connection.close().await;
+                return 0;
+            }
+            Err(error) if connection.state() == McpServerState::NeedsAuth => {
+                let _ = error;
+            }
+            Err(error) => {
+                eprintln!("{} {error}", "Error:".red().bold());
+                connection.close().await;
+                return 1;
+            }
+        }
+        let cancel = CancellationToken::new();
+        let timeout_cancel = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+            timeout_cancel.cancel();
+        });
+        let name_for_prompt = name.clone();
+        let prompt = McpSignInPrompt {
+            show_authorization_url: Arc::new(move |url| {
+                println!(
+                    "Sign in to MCP server \"{name_for_prompt}\" in your browser:\n{url}"
+                );
+                open_browser(url.as_str());
+            }),
+            prompt_for_redirect_url: Arc::new(|cancel| {
+                Box::pin(async move {
+                    if !std::io::stdin().is_terminal() {
+                        cancel.cancelled().await;
+                        return None;
+                    }
+                    tokio::task::spawn_blocking(move || {
+                        println!(
+                            "If the browser cannot reach this machine, paste the URL it was redirected to:"
+                        );
+                        let mut line = String::new();
+                        std::io::stdin().read_line(&mut line).ok()?;
+                        let line = line.trim();
+                        if line.is_empty() {
+                            None
+                        } else {
+                            Some(line.to_string())
+                        }
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                })
+            }),
+        };
+        match mcp_oauth::sign_in_mcp_server(
+            &url,
+            store,
+            &settings,
+            None,
+            prompt,
+            Some(cancel),
+        )
+        .await
+        {
+            Ok(()) => {
+                println!("Signed in to MCP server \"{name}\".");
+                connection.close().await;
+                0
+            }
+            Err(mcp_oauth::OAuthError::SignInCancelled) => {
+                eprintln!(
+                    "{} Sign-in to MCP server \"{name}\" was cancelled or timed out.",
+                    "Error:".red().bold()
+                );
+                connection.close().await;
+                1
+            }
+            Err(error) => {
+                eprintln!("{} Sign-in failed: {error}", "Error:".red().bold());
+                connection.close().await;
+                1
+            }
+        }
+    })
+}
+
+fn cmd_logout(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
+    let Some(name) = args.iter().find(|arg| !arg.starts_with("--")) else {
+        eprintln!("{} Usage: pi-rs mcp logout <server>", "Error:".red().bold());
+        return 1;
+    };
+    let loaded = mcp_config::load_mcp_config(cwd, agent_dir);
+    let Some(server) = loaded.servers.iter().find(|server| server.name == *name) else {
+        eprintln!("{} No MCP server named \"{name}\"", "Error:".red().bold());
+        return 1;
+    };
+    let Some(url) = server.config.url.as_deref().and_then(|url| Url::parse(url).ok()) else {
+        eprintln!("{} MCP server \"{name}\" has an invalid URL", "Error:".red().bold());
+        return 1;
+    };
+    let store = McpOAuthCredentialStore::new(Path::new(agent_dir)).for_server(name, url.as_str());
+    if store.remove() {
+        println!("Signed out of MCP server \"{name}\".");
+        0
+    } else {
+        println!("No stored credentials for MCP server \"{name}\".");
+        0
     }
 }
 

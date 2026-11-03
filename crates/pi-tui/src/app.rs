@@ -694,6 +694,48 @@ fn format_duration(ms: u128) -> String {
     format!("{}h {}m {remainder}s", minutes / 60, minutes % 60)
 }
 
+/// One selectable row in a [`PanelState`].
+#[derive(Debug, Clone, Default)]
+pub struct PanelItem {
+    /// Row label.
+    pub label: String,
+    /// Optional secondary text shown after the label.
+    pub description: Option<String>,
+}
+
+/// Optional text input at the bottom of a [`PanelState`].
+#[derive(Debug, Clone, Default)]
+pub struct PanelInput {
+    /// Prompt shown before the value.
+    pub label: String,
+    /// Current value.
+    pub value: String,
+}
+
+/// A framed, selectable panel rendered in the editor dock.
+///
+/// Used by extensions and built-in managers (MCP) to show a multi-level menu
+/// without changing the transcript. Key handling stays with the owner.
+#[derive(Debug, Clone, Default)]
+pub struct PanelState {
+    /// Panel title.
+    pub title: String,
+    /// Lines shown below the title.
+    pub details: Vec<String>,
+    /// Error line shown in the error color.
+    pub error: Option<String>,
+    /// Selectable rows.
+    pub items: Vec<PanelItem>,
+    /// Selected row index.
+    pub selected: usize,
+    /// Text shown when `items` is empty.
+    pub empty: Option<String>,
+    /// Footer hint.
+    pub footer: Option<String>,
+    /// Optional input row.
+    pub input: Option<PanelInput>,
+}
+
 pub enum AppMode {
     Chat,
     Select {
@@ -707,6 +749,9 @@ pub enum AppMode {
         title: String,
         message: String,
         value: String,
+    },
+    Panel {
+        panel: PanelState,
     },
 }
 /// Terminal stop reason of an assistant message (TS `StopReason`), used to
@@ -2180,6 +2225,8 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             }
             _ => {}
         },
+        // Panels own their key handling in the host (pi-coding-agent).
+        AppMode::Panel { .. } => {}
     }
     vec![]
 }
@@ -2369,9 +2416,15 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     }
     // Login dialogs replace the editor (match the original `editorContainer`).
     let secret = matches!(&model.mode, AppMode::Secret { .. });
+    let panel = match &model.mode {
+        AppMode::Panel { panel } => Some(panel.clone()),
+        _ => None,
+    };
     let (pending_h, status_h, editor_h, footer_h) = dock_heights(model, area);
     let editor_h = if secret {
         7u16.min(area.height.max(1))
+    } else if let Some(panel) = &panel {
+        panel_height(panel).min(area.height.max(1))
     } else {
         editor_h
     };
@@ -2396,6 +2449,8 @@ pub fn view(model: &mut Model, frame: &mut Frame) {
     render_status(model, frame, chunks[3], &t);
     if secret {
         render_secret_input(model, frame, chunks[4], &t);
+    } else if let Some(panel) = &panel {
+        render_panel(panel, model, frame, chunks[4], &t);
     } else {
         render_input(model, frame, chunks[4], &t);
     }
@@ -5283,6 +5338,127 @@ pub fn normalize_secret_paste(text: &str) -> String {
 ///  (escape/ctrl+c to cancel, enter to submit)
 /// └──────────────────────────────────────────────┘
 /// ```
+fn panel_height(panel: &PanelState) -> u16 {
+    let mut height = 2; // borders
+    height += 1; // title
+    height += panel.details.len();
+    if panel.error.is_some() {
+        height += 1;
+    }
+    height += 1; // spacer
+    height += if panel.items.is_empty() {
+        1
+    } else {
+        panel.items.len().min(12)
+    };
+    if panel.footer.is_some() {
+        height += 1;
+    }
+    if panel.input.is_some() {
+        height += 1;
+    }
+    (height as u16).max(7)
+}
+
+fn render_panel(
+    panel: &PanelState,
+    model: &mut Model,
+    frame: &mut Frame,
+    rect: Rect,
+    t: &Theme,
+) {
+    frame.render_widget(Clear, rect);
+    // TS `DynamicBorder`: only a top and bottom accent rule, no side borders.
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_type(BorderType::Plain)
+            .border_style(Style::new().fg(t.accent)),
+        rect,
+    );
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        panel.title.clone(),
+        Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    for detail in &panel.details {
+        lines.push(Line::from(Span::styled(
+            detail.clone(),
+            Style::new().fg(t.muted),
+        )));
+    }
+    if let Some(error) = &panel.error {
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::new().fg(t.error),
+        )));
+    }
+    lines.push(Line::from(""));
+    if panel.items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            panel.empty.clone().unwrap_or_else(|| "Nothing to show.".to_string()),
+            Style::new().fg(t.muted),
+        )));
+    } else {
+        let max_visible = 12usize;
+        let start = if panel.selected >= max_visible {
+            panel.selected + 1 - max_visible
+        } else {
+            0
+        };
+        let label_width = panel
+            .items
+            .iter()
+            .map(|item| item.label.chars().count())
+            .max()
+            .unwrap_or(0);
+        for (index, item) in panel.items.iter().enumerate().skip(start).take(max_visible) {
+            let selected = index == panel.selected;
+            let mut spans = vec![Span::styled(
+                if selected { "→ " } else { "  " }.to_string(),
+                Style::new().fg(if selected { t.accent } else { t.dim }),
+            )];
+            spans.push(Span::styled(
+                format!("{:<label_width$}", item.label),
+                Style::new()
+                    .fg(if selected { t.accent } else { t.text })
+                    .add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() }),
+            ));
+            if let Some(description) = &item.description {
+                if !description.is_empty() {
+                    spans.push(Span::styled(
+                        format!(" {description}"),
+                        Style::new().fg(t.muted),
+                    ));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    let mut input_line = None;
+    if let Some(footer) = &panel.footer {
+        lines.push(Line::from(Span::styled(
+            footer.clone(),
+            Style::new().fg(t.dim),
+        )));
+    }
+    if let Some(input) = &panel.input {
+        input_line = Some(lines.len());
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", input.label), Style::new().fg(t.muted)),
+            Span::styled(format!("> {}", input.value), Style::new().fg(t.text)),
+        ]));
+    }
+    let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+    frame.render_widget(Paragraph::new(lines), inner);
+    if let (Some(input), Some(line_index)) = (&panel.input, input_line) {
+        let x = inner.x.saturating_add(2 + input.value.chars().count() as u16);
+        let y = inner.y.saturating_add(line_index as u16);
+        model.cursor_pos = Some((x, y));
+        frame.set_cursor_position((x, y));
+    }
+}
+
 fn render_secret_input(model: &Model, frame: &mut Frame, rect: Rect, t: &Theme) {
     let AppMode::Secret {
         title,
@@ -9356,5 +9532,58 @@ mod tests {
                 .and_then(|m| m.as_str()),
             Some("single")
         );
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn panel_mode_renders_items_title_and_input_cursor() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut model = Model::new(80, 24);
+        model.mode = AppMode::Panel {
+            panel: PanelState {
+                title: "MCP servers".to_string(),
+                details: vec!["details line".to_string()],
+                error: Some("boom".to_string()),
+                items: vec![
+                    PanelItem {
+                        label: "docs".to_string(),
+                        description: Some("connected · codemode · global".to_string()),
+                    },
+                    PanelItem {
+                        label: "tools".to_string(),
+                        description: Some("failed · direct · project".to_string()),
+                    },
+                ],
+                selected: 0,
+                empty: None,
+                footer: Some("enter manage · esc close".to_string()),
+                input: Some(PanelInput {
+                    label: "redirect".to_string(),
+                    value: "abc".to_string(),
+                }),
+            },
+        };
+        terminal.draw(|frame| view(&mut model, frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("MCP servers"));
+        assert!(text.contains("docs"));
+        assert!(text.contains("connected"));
+        assert!(text.contains("redirect"));
+        assert!(text.contains("enter manage"));
+        assert!(model.cursor_pos.is_some());
     }
 }

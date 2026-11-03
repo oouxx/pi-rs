@@ -188,6 +188,7 @@ pub fn create_tool_definition_from_agent_tool(
         execute: None,
         render: None,
         source_info: None,
+        ..Default::default()
     }
 }
 
@@ -243,6 +244,7 @@ mod tests {
             execute: None,
             render: None,
             source_info: None,
+            ..Default::default()
         };
 
         let tool = wrap_tool_definition::<()>(def);
@@ -267,6 +269,7 @@ mod tests {
                 execute: None,
                 render: None,
                 source_info: None,
+                ..Default::default()
             },
             ToolDefinition {
                 constrained_sampling: None,
@@ -281,6 +284,7 @@ mod tests {
                 execute: None,
                 render: None,
                 source_info: None,
+                ..Default::default()
             },
         ];
 
@@ -330,6 +334,7 @@ mod tests {
             execute: None,
             render: None,
             source_info: None,
+            ..Default::default()
         };
 
         let tool = wrap_tool_definition::<()>(def);

@@ -19,6 +19,9 @@ use crate::core::model_resolver::DEFAULT_MODEL_PER_PROVIDER;
 use crate::core::provider_display_names::get_provider_display_name;
 use crate::core::session_manager::SessionManager;
 
+#[cfg(feature = "mcp")]
+mod mcp_ui;
+
 const DOUBLE_CTRL_C_WINDOW_MS: u64 = 500;
 const SPINNER_TICK_MS: u64 = 100;
 
@@ -172,6 +175,9 @@ enum UiAction {
     },
     SetWorkingMessage(Option<String>),
     SetWorkingVisible(bool),
+    /// MCP manager events from async connection/sign-in work.
+    #[cfg(feature = "mcp")]
+    Mcp(mcp_ui::McpUiEvent),
 }
 
 /// An extension dialog the TUI is waiting for the user to answer.
@@ -447,6 +453,14 @@ struct AppState {
     skill_commands: Vec<String>,
     /// Extension dialog awaiting a user answer (at most one at a time).
     pending_ui: Option<PendingUi>,
+    /// Extension UI channel, shared with async MCP manager work.
+    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<UiAction>>,
+    /// `/mcp` manager state (interactive TUI only).
+    #[cfg(feature = "mcp")]
+    mcp_ui: Option<mcp_ui::McpUiState>,
+    /// Session-owned MCP connections, reused by `/mcp`.
+    #[cfg(feature = "mcp")]
+    mcp_connections: Vec<crate::core::mcp_runtime::McpServerConnection>,
     /// Providers available for `/login <provider>` (`id`, display name),
     /// snapshot taken at startup (match TS `getLoginProviderOptions`).
     login_providers: Vec<(String, String)>,
@@ -479,6 +493,11 @@ impl AppState {
             ext_commands,
             skill_commands,
             pending_ui: None,
+            ui_tx: None,
+            #[cfg(feature = "mcp")]
+            mcp_ui: None,
+            #[cfg(feature = "mcp")]
+            mcp_connections: Vec::new(),
             login_providers: Vec::new(),
             stream_started_at: None,
             last_status_refresh: Instant::now() - std::time::Duration::from_secs(10),
@@ -801,6 +820,13 @@ fn handle_ui_action(state: &mut AppState, action: UiAction) {
                 title,
             };
         }
+        #[cfg(feature = "mcp")]
+        UiAction::Mcp(event) => {
+            if let Some(ui) = &mut state.mcp_ui {
+                ui.on_event(event);
+                state.model.mode = pi_tui::AppMode::Panel { panel: ui.panel() };
+            }
+        }
     }
 }
 
@@ -819,6 +845,12 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
         pi_tui::AppMode::Select { .. } => return handle_select_key(state, key),
         pi_tui::AppMode::Editor { .. } => return handle_editor_key(state, key),
         pi_tui::AppMode::Secret { .. } => return handle_secret_key(state, key),
+        pi_tui::AppMode::Panel { .. } => {
+            #[cfg(feature = "mcp")]
+            return handle_mcp_panel_key(state, key);
+            #[cfg(not(feature = "mcp"))]
+            return vec![];
+        }
         pi_tui::AppMode::Chat => {}
     }
 
@@ -1474,6 +1506,8 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             vec![Effect::AgentCommand(AgentCmd::CopyLastMessage)]
         }
         "/login" => login_command(state, args),
+        #[cfg(feature = "mcp")]
+        "/mcp" => open_mcp_manager(state, args),
         "/logout" => logout_command(args),
         "/quit" | "/exit" => {
             state.quit = true;
@@ -1498,6 +1532,67 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
             }
         }
     }
+}
+
+/// `/mcp` — open the MCP manager panel.
+#[cfg(feature = "mcp")]
+fn open_mcp_manager(state: &mut AppState, args: &str) -> Vec<Effect> {
+    if state.mcp_ui.is_some() {
+        return vec![];
+    }
+    let Some(ui_tx) = state.ui_tx.clone() else {
+        return vec![];
+    };
+    let cwd = state.model.cwd.clone();
+    let agent_dir = crate::config::get_agent_dir()
+        .to_string_lossy()
+        .to_string();
+    let mut ui = mcp_ui::McpUiState::new(cwd, agent_dir, ui_tx.clone());
+    state.model.mode = pi_tui::AppMode::Panel { panel: ui.panel() };
+    ui.dispatch_action(args, &ui_tx);
+    state.model.mode = pi_tui::AppMode::Panel { panel: ui.panel() };
+    state.mcp_ui = Some(ui);
+    vec![]
+}
+
+#[cfg(feature = "mcp")]
+fn handle_mcp_panel_key(
+    state: &mut AppState,
+    key: crossterm::event::KeyEvent,
+) -> Vec<Effect> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+        close_mcp_manager(state);
+        return vec![];
+    }
+    let Some(ui_tx) = state.ui_tx.clone() else {
+        close_mcp_manager(state);
+        return vec![];
+    };
+    let result = state
+        .mcp_ui
+        .as_mut()
+        .map(|ui| ui.handle_key(key, &ui_tx));
+    match result {
+        Some(mcp_ui::McpKeyResult::Redraw) => {
+            if let Some(ui) = &state.mcp_ui {
+                state.model.mode = pi_tui::AppMode::Panel { panel: ui.panel() };
+            }
+        }
+        Some(mcp_ui::McpKeyResult::Close) => close_mcp_manager(state),
+        _ => {}
+    }
+    vec![]
+}
+
+#[cfg(feature = "mcp")]
+fn close_mcp_manager(state: &mut AppState) {
+    if let Some(ui) = state.mcp_ui.take() {
+        tokio::spawn(async move {
+            ui.close().await;
+        });
+    }
+    state.model.mode = pi_tui::AppMode::Chat;
 }
 
 /// `/login [provider]` — start provider authentication (match TS
@@ -2927,8 +3022,9 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     session.set_extension_ui_context(ui_ctx);
     // 扩展错误 → 系统消息（对齐 TS interactive-mode `showExtensionError`：
     // 错误以文本形式进入聊天区，而不是写 stderr 污染备用屏幕）。
+    let extension_error_tx = ui_tx.clone();
     session.set_extension_error_listener(Some(Box::new(move |err| {
-        let _ = ui_tx.send(UiAction::Notify(format!(
+        let _ = extension_error_tx.send(UiAction::Notify(format!(
             "Extension \"{}\" error: {}",
             err.extension_path, err.error
         )));
@@ -2938,6 +3034,11 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
     session.set_extension_mode("tui");
 
     let mut state = AppState::new(cols, rows, ext_commands, skill_commands);
+    state.ui_tx = Some(ui_tx.clone());
+    #[cfg(feature = "mcp")]
+    {
+        state.mcp_connections = session.mcp_connections();
+    }
 
     // `/login` provider snapshot (match TS `getLoginProviderOptions`, which
     // iterates all *registered* providers regardless of whether their model

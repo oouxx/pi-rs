@@ -156,8 +156,11 @@ pi-rs auth check              # 检查认证状态
 pi-rs auth print-api-key      # 输出指定提供商的 API Key
 pi-rs mcp list                # 列出 MCP 服务器
 pi-rs mcp add <name> -- <cmd> # 添加 stdio MCP 服务器（项目 .pi-rs/mcp.json）
-pi-rs mcp add <name> --url <url> [--sse] [--header N:V]
+pi-rs mcp add <name> --url <url> [--sse] [--header N:V] [--exposure direct|deferred|codemode|hidden]
 pi-rs mcp enable|disable|remove <name>
+pi-rs mcp login <name>       # OAuth 登录（远程 MCP）
+pi-rs mcp logout <name>      # 删除已存 OAuth 凭据
+# 会话内使用 /mcp 打开多级管理器（登录、重连、启停、Exposure、工具列表）
 ```
 
 ## 会话中的斜杠命令

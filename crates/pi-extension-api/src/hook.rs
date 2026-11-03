@@ -88,6 +88,17 @@ pub struct RegisteredTool {
     pub source_info: SourceInfo,
 }
 
+/// An MCP server registered by an extension (`pi.registerMcpServer`).
+#[derive(Debug, Clone)]
+pub struct McpServerRegistration {
+    /// Server name.
+    pub name: String,
+    /// Raw `mcpServers` config, validated by the coding-agent MCP layer.
+    pub config: serde_json::Value,
+    /// Provenance of the registering extension.
+    pub source_info: SourceInfo,
+}
+
 /// Options for registering a command. Mirrors TS `registerCommand(name, options)`
 /// where `options = { description?, getArgumentCompletions?, handler }`.
 /// Using a struct keeps `register` ≤3 params and is extensible.
@@ -283,6 +294,10 @@ pub trait HookHandler: Send + Sync {
 
     /// 注册标志。在扩展注册时调用。
     fn register_flags(&self, _flags: &mut FlagRegistry) {}
+
+    /// Register MCP servers (`pi.registerMcpServer`). Called once when the
+    /// extension is registered; configs are validated by the MCP layer.
+    fn register_mcp_servers(&self, _servers: &mut Vec<McpServerRegistration>) {}
 
     // ── 工具调用处理 ──────────────────────────────────────────────
 

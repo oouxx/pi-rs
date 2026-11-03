@@ -302,6 +302,18 @@ pub type ToolExecuteFn = Arc<
 
 /// Configuration for creating an AgentSession.
 /// Matches the original TypeScript AgentSessionConfig interface.
+/// Future returned by the built-in `tool_search` executor.
+type ToolSearchFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
+            > + Send,
+    >,
+>;
+
 pub struct AgentSessionConfig {
     pub cwd: String,
     /// Agent configuration directory used for trust/auth/runtime extension
@@ -696,6 +708,9 @@ impl SessionEventUnsubscribeHandle {
 // ============================================================================
 
 #[allow(clippy::type_complexity)]
+/// One-shot readiness wait before the first prompt (MCP direct tools).
+pub type PrePromptWait = Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 pub struct AgentSession {
     agent: Arc<Agent>,
     session_manager: Arc<std::sync::Mutex<SessionManager>>,
@@ -726,6 +741,16 @@ pub struct AgentSession {
     /// Full tool registry (all available tools, not just active ones),
     /// matching TS `_toolRegistry`. Used by `set_active_tools_by_name()`.
     tool_registry: Vec<Arc<pi_agent_core::types::DynTool>>,
+    /// Tools added after session construction (MCP `tools/list_changed`).
+    runtime_tools: Arc<crate::core::runtime_tools::RuntimeToolManager>,
+    /// MCP connections owned by this session, exposed to the `/mcp` manager
+    /// so it shows and acts on the session's real connections.
+    #[cfg(feature = "mcp")]
+    mcp_connections: Arc<
+        std::sync::Mutex<Vec<crate::core::mcp_runtime::McpServerConnection>>,
+    >,
+    /// One-shot wait before the first prompt (ACP direct MCP tools).
+    pre_prompt_wait: std::sync::Mutex<Option<PrePromptWait>>,
     /// Tool definitions registry, matching TS `_toolDefinitions` (used by
     /// getAllTools / getToolDefinition). Populated from custom_tools and
     /// extension tools at construction time.
@@ -1229,11 +1254,26 @@ impl AgentSession {
             Some(read_model_provider),
         ));
 
+        // Exposure metadata for extension tools; built-in and SDK custom tools
+        // are `direct` unless they say otherwise.
+        let mut tool_exposures: std::collections::HashMap<
+            String,
+            pi_extension_api::ToolExposure,
+        > = std::collections::HashMap::new();
+        let mut tool_namespaces: std::collections::HashMap<
+            String,
+            pi_extension_api::ToolNamespace,
+        > = std::collections::HashMap::new();
+
         // 2. Custom tools from SDK callers (via custom_tools / ToolDefinition + execute)
         if let Some(ref custom_tools) = options.custom_tools {
             use pi_agent_core::pi_ai_types::ToolExecutionMode;
             for def in custom_tools {
                 let tool_name = def.name.clone();
+                tool_exposures.insert(def.name.clone(), def.exposure);
+                if let Some(namespace) = &def.namespace {
+                    tool_namespaces.insert(def.name.clone(), namespace.clone());
+                }
                 let execute: ToolExecuteFn = if let Some(ref tool_exec) = def.execute {
                     let exec = tool_exec.clone();
                     Arc::new(move |id, params, signal, _on_update| {
@@ -1282,6 +1322,10 @@ impl AgentSession {
             let collected = registry.tools().to_vec();
             for rt in collected {
                 let def = rt.definition;
+                tool_exposures.insert(def.name.clone(), def.exposure);
+                if let Some(namespace) = &def.namespace {
+                    tool_namespaces.insert(def.name.clone(), namespace.clone());
+                }
                 // A tool without an object parameter schema would break the
                 // provider request; reject it at registration instead
                 // (TS #9300). Rust extensions register programmatically, so the
@@ -1396,6 +1440,167 @@ impl AgentSession {
         if let Some(ref excluded) = options.excluded_tool_names {
             tool_list.retain(|t| !excluded.contains(&t.name));
         }
+
+        // `tool_search` reaches Deferred/Codemode tools that are registered but
+        // not active. It is added before the registry snapshot so it can also
+        // activate itself and other tools by name.
+        let tool_search_agent: Arc<tokio::sync::Mutex<Option<Arc<Agent>>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let searchable_tools: Vec<&pi_agent_core::types::DynTool> = tool_list
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool_exposures
+                        .get(&tool.name)
+                        .copied()
+                        .unwrap_or(pi_extension_api::ToolExposure::Direct),
+                    pi_extension_api::ToolExposure::Deferred
+                        | pi_extension_api::ToolExposure::Codemode
+                )
+            })
+            .collect();
+        let runtime_tools = std::sync::Arc::new(
+            crate::core::runtime_tools::RuntimeToolManager::default(),
+        );
+        if !searchable_tools.is_empty() {
+            let documents: Vec<crate::core::tool_search::ToolSearchDocument> = searchable_tools
+                .iter()
+                .map(|tool| {
+                    let namespace = tool_namespaces.get(&tool.name).map(|namespace| {
+                        (
+                            namespace.name.as_str(),
+                            namespace.description.as_deref(),
+                            namespace.instructions.as_deref(),
+                        )
+                    });
+                    crate::core::tool_search::create_tool_search_document(
+                        &tool.name,
+                        &tool.description,
+                        Some(&tool.parameters_schema),
+                        namespace,
+                    )
+                })
+                .collect();
+            let searchable_registry: std::collections::HashMap<
+                String,
+                Arc<pi_agent_core::types::DynTool>,
+            > = searchable_tools
+                .iter()
+                .map(|tool| {
+                    (
+                        tool.name.clone(),
+                        Arc::new((*tool).clone()) as Arc<pi_agent_core::types::DynTool>,
+                    )
+                })
+                .collect();
+            runtime_tools.seed_search(documents, searchable_registry);
+            let agent_slot = Arc::clone(&tool_search_agent);
+            let runtime_tools_for_search = Arc::clone(&runtime_tools);
+            let execute = Arc::new(
+                move |_tool_call_id: String,
+                      params: serde_json::Value,
+                      _signal: Option<tokio::sync::watch::Receiver<bool>>,
+                      _on_update: Option<
+                    Arc<
+                        dyn Fn(
+                                pi_agent_core::types::AgentToolResult<serde_json::Value>,
+                            ) + Send
+                            + Sync,
+                    >,
+                >| {
+                    let runtime_tools = Arc::clone(&runtime_tools_for_search);
+                    let agent_slot = Arc::clone(&agent_slot);
+                    let future: ToolSearchFuture = Box::pin(async move {
+                        let query = params
+                            .get("query")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| "query must be a string".to_string())?
+                            .to_string();
+                        if query.trim().is_empty() {
+                            return Err("query must not be empty".to_string().into());
+                        }
+                        let limit = params
+                            .get("limit")
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|limit| limit as usize)
+                            .unwrap_or(8);
+                        if limit == 0 {
+                            return Err("limit must be a positive integer".to_string().into());
+                        }
+                        let agent = agent_slot
+                            .lock()
+                            .await
+                            .clone()
+                            .ok_or_else(|| "tool_search is not ready".to_string())?;
+                        let state = agent.state().await;
+                        let active: std::collections::HashSet<String> =
+                            state.tools.iter().map(|tool| tool.name.clone()).collect();
+                        let matches = runtime_tools.search(&query, &active, limit);
+                        let additions: Vec<Arc<pi_agent_core::types::DynTool>> = matches
+                            .iter()
+                            .map(|(_, tool)| Arc::clone(tool))
+                            .collect();
+                        let names: Vec<String> =
+                            matches.iter().map(|(name, _)| name.clone()).collect();
+                        if additions.is_empty() {
+                            return Ok(pi_agent_core::types::AgentToolResult {
+                                content: vec![pi_agent_core::pi_ai_types::text_block(
+                                    "No matching tools found.".to_string(),
+                                )],
+                                details: serde_json::json!({"loaded": []}),
+                                usage: None,
+                                terminate: None,
+                            });
+                        }
+                        agent.add_tools(additions).await;
+                        let text = format!(
+                            "Loaded {} tool{}. They are available from your next call:\n{}",
+                            names.len(),
+                            if names.len() == 1 { "" } else { "s" },
+                            names
+                                .iter()
+                                .map(|name| format!("- {name}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        );
+                        Ok(pi_agent_core::types::AgentToolResult {
+                            content: vec![pi_agent_core::pi_ai_types::text_block(text)],
+                            details: serde_json::json!({"loaded": names}),
+                            usage: None,
+                            terminate: None,
+                        })
+                    });
+                    future
+                },
+            );
+            tool_list.push(pi_agent_core::types::AgentTool {
+                constrained_sampling: None,
+                name: "tool_search".to_string(),
+                description: "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nSome of the tools, such as tools of MCP servers, may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search`.".to_string(),
+                label: "tool_search".to_string(),
+                prompt_snippet: Some(
+                    "Search for tools that are not loaded yet and load the matches".to_string(),
+                ),
+                prompt_guidelines: None,
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query for deferred tools."},
+                        "limit": {"type": "number", "description": "Maximum number of tools to return. Defaults to 8."}
+                    },
+                    "required": ["query"]
+                }),
+                execution_mode: None,
+                prepare_arguments: None,
+                execute,
+            });
+            runtime_tools.mark_tool_search_present();
+            tool_exposures.insert(
+                "tool_search".to_string(),
+                pi_extension_api::ToolExposure::Direct,
+            );
+        }
+
         // Snapshot the full registry (TS `_toolRegistry`): every declarable
         // tool, active or not.
         let tool_registry: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
@@ -1489,11 +1694,27 @@ impl AgentSession {
             .as_ref()
             .map(|ct| ct.iter().map(|d| d.name.clone()).collect())
             .unwrap_or_default();
+        let explicit_activation = |name: &str| {
+            initial_active.iter().any(|tool| tool == name)
+                || allowed_names.contains(name)
+        };
         tool_list.retain(|t| {
-            custom_names.contains(&t.name)
-                || !tools::is_builtin_tool(&t.name)
-                || initial_active.contains(&t.name)
-                || allowed_names.contains(&t.name)
+            let exposure = tool_exposures
+                .get(&t.name)
+                .copied()
+                .unwrap_or(pi_extension_api::ToolExposure::Direct);
+            let explicit = explicit_activation(&t.name);
+            let visible = match exposure {
+                pi_extension_api::ToolExposure::Hidden => false,
+                pi_extension_api::ToolExposure::Deferred
+                | pi_extension_api::ToolExposure::Codemode => explicit,
+                pi_extension_api::ToolExposure::Direct
+                | pi_extension_api::ToolExposure::ModelOnly => true,
+            };
+            visible
+                && (custom_names.contains(&t.name)
+                    || !tools::is_builtin_tool(&t.name)
+                    || explicit)
         });
         let active_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
@@ -2120,6 +2341,8 @@ impl AgentSession {
         };
 
         let agent = Arc::new(Agent::new(agent_options));
+        *tool_search_agent.lock().await = Some(Arc::clone(&agent));
+        runtime_tools.set_agent(Arc::clone(&agent));
         // Bind the agent reference used by the bash tool's session-env provider
         // (resolved at each command start, match TS #6967).
         *bash_agent_ref
@@ -2271,6 +2494,10 @@ impl AgentSession {
             // 实时 UI 绑定（工具/钩子闭包共享的上下文也通过它读取）。
             extension_ui_binding,
             tool_registry,
+            runtime_tools,
+            #[cfg(feature = "mcp")]
+            mcp_connections: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pre_prompt_wait: std::sync::Mutex::new(None),
             tool_definitions,
             resource_loader: std::sync::Mutex::new(options.resource_loader),
             system_prompt_options: Some({
@@ -3331,6 +3558,40 @@ impl AgentSession {
         self.extension_registry.clone()
     }
 
+    /// Runtime tool registry for tools that appear after session start.
+    pub fn runtime_tools(&self) -> Arc<crate::core::runtime_tools::RuntimeToolManager> {
+        Arc::clone(&self.runtime_tools)
+    }
+
+    /// Install a one-shot wait that runs before the first prompt.
+    pub fn set_pre_prompt_wait(&self, wait: PrePromptWait) {
+        *self
+            .pre_prompt_wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(wait);
+    }
+
+    /// Replace the MCP connections exposed to the `/mcp` manager.
+    #[cfg(feature = "mcp")]
+    pub fn set_mcp_connections(
+        &self,
+        connections: Vec<crate::core::mcp_runtime::McpServerConnection>,
+    ) {
+        *self
+            .mcp_connections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = connections;
+    }
+
+    /// MCP connections owned by this session.
+    #[cfg(feature = "mcp")]
+    pub fn mcp_connections(&self) -> Vec<crate::core::mcp_runtime::McpServerConnection> {
+        self.mcp_connections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// The extension UI/context object passed to extension command handlers.
     pub fn get_extension_context(&self) -> &ExtensionContext {
         &self.ext_ctx
@@ -3969,6 +4230,31 @@ impl AgentSession {
         self.retry_attempt.clone()
     }
 
+    /// Insert or remove a named system prompt section and rebuild the prompt.
+    ///
+    /// Used by built-in integrations (MCP) that need to describe themselves in
+    /// the system prompt without changing the session config shape.
+    pub async fn set_system_prompt_section(&self, name: &str, content: Option<String>) {
+        let Some(mut opts) = self.system_prompt_options.clone() else {
+            return;
+        };
+        let sections = opts.sections.get_or_insert_with(Default::default);
+        match content {
+            Some(content) => {
+                sections.insert(name.to_string(), content);
+            }
+            None => {
+                sections.shift_remove(name);
+            }
+        }
+        let rebuilt = system_prompt::build_system_prompt(&opts);
+        *self
+            .base_system_prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = rebuilt.clone();
+        self.agent.set_system_prompt(rebuilt).await;
+    }
+
     /// Get the names of currently active tools, matching TS `getActiveToolNames()`.
     pub async fn get_active_tool_names(&self) -> Vec<String> {
         self.agent
@@ -3984,8 +4270,11 @@ impl AgentSession {
     pub fn get_tool_definition(
         &self,
         name: &str,
-    ) -> Option<&crate::core::extensions::ToolDefinition> {
-        self.tool_definitions.get(name)
+    ) -> Option<crate::core::extensions::ToolDefinition> {
+        self.tool_definitions
+            .get(name)
+            .cloned()
+            .or_else(|| self.runtime_tools.definition(name))
     }
 
     /// 扩展工具的自定义渲染回调（TS `renderCall` / `renderResult`），按工具名
@@ -3993,25 +4282,52 @@ impl AgentSession {
     pub fn tool_render_fns(
         &self,
     ) -> std::collections::HashMap<String, pi_extension_api::ToolRenderFn> {
-        self.tool_definitions
+        let mut renderers: std::collections::HashMap<
+            String,
+            pi_extension_api::ToolRenderFn,
+        > = self
+            .tool_definitions
             .iter()
             .filter_map(|(name, def)| def.render.clone().map(|render| (name.clone(), render)))
-            .collect()
+            .collect();
+        for def in self.runtime_tools.definitions() {
+            if let Some(render) = def.render {
+                renderers.insert(def.name, render);
+            }
+        }
+        renderers
     }
 
     /// Get all configured tools with name, description, parameter schema,
     /// prompt guidelines, and source metadata, matching TS `getAllTools()`.
     pub fn get_all_tools(&self) -> Vec<crate::core::extensions::ToolInfo> {
-        self.tool_definitions
+        let mut tools: Vec<crate::core::extensions::ToolInfo> = self
+            .tool_definitions
             .values()
             .map(|def| crate::core::extensions::ToolInfo {
                 name: def.name.clone(),
                 description: def.description.clone(),
                 parameters: def.parameters.clone(),
                 prompt_guidelines: def.prompt_guidelines.clone(),
+                exposure: def.exposure,
+                namespace: def.namespace.clone(),
+                output_schema: def.output_schema.clone(),
                 source_info: def.source_info.clone(),
             })
-            .collect()
+            .collect();
+        tools.extend(self.runtime_tools.definitions().into_iter().map(|def| {
+            crate::core::extensions::ToolInfo {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                parameters: def.parameters.clone(),
+                prompt_guidelines: def.prompt_guidelines.clone(),
+                exposure: def.exposure,
+                namespace: def.namespace.clone(),
+                output_schema: def.output_schema.clone(),
+                source_info: def.source_info.clone(),
+            }
+        }));
+        tools
     }
 
     /// Set active tools by name, matching TS `setActiveToolsByName()`.
@@ -4027,7 +4343,13 @@ impl AgentSession {
     pub async fn set_active_tools_by_name(&self, tool_names: &[String]) {
         let selected: Vec<Arc<pi_agent_core::types::DynTool>> = tool_names
             .iter()
-            .filter_map(|name| self.tool_registry.iter().find(|t| t.name == *name).cloned())
+            .filter_map(|name| {
+                self.tool_registry
+                    .iter()
+                    .find(|t| t.name == *name)
+                    .cloned()
+                    .or_else(|| self.runtime_tools.tool(name))
+            })
             .collect();
         // Write through the shared state — `state()` returns a clone.
         self.agent
@@ -4305,6 +4627,15 @@ impl AgentSession {
                     options,
                 });
             return Ok(());
+        }
+        // Wait once for MCP direct tools that are still connecting (ACP).
+        let wait = self
+            .pre_prompt_wait
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(wait) = wait {
+            wait().await;
         }
         // Apply queued JS extension actions before the turn starts.
         self.drain_extension_actions().await;
@@ -9298,6 +9629,91 @@ mod tests {
         assert_eq!(
             extract_user_message_text(&serde_json::json!({"role": "user"})),
             None
+        );
+    }
+
+    /// A `deferred` tool is registered but not declared to the model until
+    /// `tool_search` loads it. This is the core contract MCP `deferred`
+    /// exposure depends on.
+    #[tokio::test]
+    async fn deferred_tools_stay_inactive_until_tool_search_loads_them() {
+        use pi_extension_api::hook::HookHandler;
+        use pi_extension_api::ToolExposure;
+
+        struct DeferredExtension;
+
+        #[async_trait::async_trait]
+        impl HookHandler for DeferredExtension {
+            fn name(&self) -> &str {
+                "deferred-extension"
+            }
+
+            fn register_tools(&self, tools: &mut pi_extension_api::hook::ToolRegistry) {
+                let execute: pi_extension_api::ToolExecuteFn = Arc::new(|_, _, _| {
+                    Box::pin(async {
+                        Ok(pi_extension_api::ToolCallOutput {
+                            content: vec![serde_json::json!({"type": "text", "text": "ok"})],
+                            details: None,
+                            is_error: false,
+                            terminate: None,
+                        })
+                    })
+                });
+                let definition = pi_extension_api::ToolDefinition {
+                    name: "deferred_tool".to_string(),
+                    description: "Searches widgets".to_string(),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {"q": {"type": "string", "description": "Widget query"}}
+                    })),
+                    exposure: ToolExposure::Deferred,
+                    execute: Some(execute),
+                    ..Default::default()
+                };
+                tools.register("deferred_tool", definition);
+            }
+        }
+
+        let mut registry = crate::core::extensions::ExtensionRegistry::new();
+        registry.register(
+            Box::new(DeferredExtension),
+            pi_extension_api::create_builtin_source_info("test"),
+        );
+        let session = build_settle_test_session(Some(Arc::new(registry))).await;
+
+        let active = session.get_active_tool_names().await;
+        assert!(
+            !active.contains(&"deferred_tool".to_string()),
+            "deferred tool must not be active before tool_search: {active:?}"
+        );
+        assert!(
+            active.contains(&"tool_search".to_string()),
+            "tool_search must be active when deferred tools exist: {active:?}"
+        );
+
+        let tool_search = session
+            .tool_registry
+            .iter()
+            .find(|tool| tool.name == "tool_search")
+            .expect("tool_search registered");
+        let result = (tool_search.execute)(
+            "call-1".to_string(),
+            serde_json::json!({"query": "widgets"}),
+            None,
+            None,
+        )
+        .await
+        .expect("tool_search executes");
+        assert!(result.content.iter().any(|block| matches!(
+            block,
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. }
+                if text.contains("deferred_tool")
+        )));
+
+        let active = session.get_active_tool_names().await;
+        assert!(
+            active.contains(&"deferred_tool".to_string()),
+            "tool_search must activate the match: {active:?}"
         );
     }
 }

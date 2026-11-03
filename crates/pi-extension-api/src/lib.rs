@@ -15,9 +15,9 @@ use serde_json::Value;
 
 pub use hook::{
     ArgumentCompletionsFn, AutocompleteItem, CommandRegistration, CommandRegistry, FlagRegistry,
-    HookHandler, HookResult, HookRunner, RegisteredCommand, RegisteredFlag, RegisteredShortcut,
-    RegisteredTool, SessionBeforeCompactEvent, SessionBeforeCompactResult, ShortcutRegistry,
-    ToolRegistry,
+    HookHandler, HookResult, HookRunner, McpServerRegistration, RegisteredCommand, RegisteredFlag,
+    RegisteredShortcut, RegisteredTool, SessionBeforeCompactEvent, SessionBeforeCompactResult,
+    ShortcutRegistry, ToolRegistry,
 };
 pub use source_info::{
     create_builtin_source_info, create_source_info, create_synthetic_source_info, SourceInfo,
@@ -264,6 +264,73 @@ pub type ToolExecuteFn = Arc<
         + Sync,
 >;
 
+/// How a tool is exposed to the model and to discovery tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolExposure {
+    /// Declared to the model like any other tool.
+    #[default]
+    Direct,
+    /// Declared to the model, but not callable from scripts.
+    ModelOnly,
+    /// Callable from codemode scripts, but not declared to the model.
+    Codemode,
+    /// Loaded by `tool_search` before being declared to the model.
+    Deferred,
+    /// Registered but unreachable.
+    Hidden,
+}
+
+/// Namespace metadata for tools (MCP servers, grouped tools).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolNamespace {
+    /// Namespace name, for example `mcp__docs`.
+    pub name: String,
+    /// Alternative names that identify the namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// One-line description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Longer instructions from the tool provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// Behavior hints for a tool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    /// Display title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Tool does not modify state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    /// Tool may perform destructive updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    /// Repeated calls have no additional effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    /// Tool interacts with external entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+/// Which tools a tool call may reach, for readiness and discovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReachesTools {
+    /// Every tool.
+    All,
+    /// Every tool whose name contains one of these words.
+    Names(Vec<String>),
+}
+
+/// Callback that computes [`ReachesTools`] from tool arguments.
+pub type ReachesToolsFn = Arc<dyn Fn(&Value) -> ReachesTools + Send + Sync>;
+
 /// Tool definition matching the original TypeScript `ToolDefinition` interface.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ToolDefinition {
@@ -286,6 +353,21 @@ pub struct ToolDefinition {
     pub render_shell: Option<String>,
     #[serde(default)]
     pub execution_mode: Option<String>,
+    /// How the tool is exposed (TS `ToolDefinition.exposure`).
+    #[serde(default)]
+    pub exposure: ToolExposure,
+    /// Namespace metadata (TS `ToolDefinition.namespace`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<ToolNamespace>,
+    /// Structured output schema (TS `ToolDefinition.outputSchema`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    /// Behavior hints (TS `ToolDefinition.annotations`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+    /// Tools this call may reach (TS `ToolDefinition.reachesTools`).
+    #[serde(skip)]
+    pub reaches_tools: Option<ReachesToolsFn>,
     #[serde(skip)]
     pub execute: Option<ToolExecuteFn>,
     /// 自定义渲染（对齐 TS `renderCall` / `renderResult`）：TUI 渲染该工具的
@@ -309,6 +391,11 @@ impl std::fmt::Debug for ToolDefinition {
             .field("parameters", &self.parameters)
             .field("render_shell", &self.render_shell)
             .field("execution_mode", &self.execution_mode)
+            .field("exposure", &self.exposure)
+            .field("namespace", &self.namespace)
+            .field("output_schema", &self.output_schema)
+            .field("annotations", &self.annotations)
+            .field("reaches_tools", &self.reaches_tools.as_ref().map(|_| "Some(fn)"))
             .field("execute", &self.execute.as_ref().map(|_| "Some(fn)"))
             .field("render", &self.render.as_ref().map(|_| "Some(fn)"))
             .finish()
@@ -340,6 +427,15 @@ pub struct ToolInfo {
     pub parameters: Option<Value>,
     /// Prompt guidelines for the tool, matching TS `ToolInfo.promptGuidelines`.
     pub prompt_guidelines: Option<Vec<String>>,
+    /// How the tool is exposed (TS `ToolInfo.exposure`).
+    #[serde(default)]
+    pub exposure: ToolExposure,
+    /// Namespace metadata (TS `ToolInfo.namespace`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<ToolNamespace>,
+    /// Structured output schema (TS `ToolInfo.outputSchema`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
     /// Provenance of the tool definition, matching TS `ToolInfo.sourceInfo`.
     pub source_info: Option<SourceInfo>,
 }
@@ -1006,6 +1102,7 @@ pub struct ExtensionRegistry {
     commands: Vec<RegisteredCommand>,
     shortcuts: Vec<RegisteredShortcut>,
     flags: Vec<RegisteredFlag>,
+    mcp_servers: Vec<McpServerRegistration>,
 }
 
 impl ExtensionRegistry {
@@ -1017,6 +1114,7 @@ impl ExtensionRegistry {
             commands: Vec::new(),
             shortcuts: Vec::new(),
             flags: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1047,6 +1145,14 @@ impl ExtensionRegistry {
         let mut flag_reg = FlagRegistry::new();
         handler.register_flags(&mut flag_reg);
         self.flags.extend(flag_reg.into_vec());
+
+        // Collect MCP server registrations.
+        let mut mcp_servers = Vec::new();
+        handler.register_mcp_servers(&mut mcp_servers);
+        for server in &mut mcp_servers {
+            server.source_info = source_info.clone();
+        }
+        self.mcp_servers.extend(mcp_servers);
 
         // Register with hook runner for event dispatch
         self.hook_runner.register(handler);
@@ -1092,6 +1198,12 @@ impl ExtensionRegistry {
     #[must_use]
     pub fn flags(&self) -> &[RegisteredFlag] {
         &self.flags
+    }
+
+    /// MCP servers registered by extensions.
+    #[must_use]
+    pub fn mcp_servers(&self) -> &[McpServerRegistration] {
+        &self.mcp_servers
     }
 
     /// Tools that cannot be sent to a provider: an extension tool must declare

@@ -315,6 +315,23 @@ mod tests {
     }
 
     #[test]
+    fn structured_content_without_blocks_becomes_text() {
+        let result = CallToolResult {
+            content: Vec::new(),
+            structured_content: Some(serde_json::json!({"answer": 42})),
+            is_error: false,
+            meta: None,
+        };
+        let output = convert_mcp_result("s", "t", result);
+        assert_eq!(output.content.len(), 1);
+        assert!(text_of(&output.content).contains("\"answer\": 42"));
+        assert_eq!(
+            output.details.as_ref().unwrap()["structuredContent"]["answer"],
+            42
+        );
+    }
+
+    #[test]
     fn converts_error_result() {
         let result = CallToolResult {
             content: Vec::new(),

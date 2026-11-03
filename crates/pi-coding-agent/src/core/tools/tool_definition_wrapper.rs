@@ -5,17 +5,37 @@ use pi_extension_api::ToolCallOutput;
 
 use crate::core::extensions::ToolDefinition;
 
+/// Convert extension-provided content values into `ContentBlock`s.
+///
+/// `ToolCallOutput.content` is an untyped `Vec<Value>`, so a tool may return a
+/// bare JSON value (`{"answer": 42}`) or a block with an unsupported type.
+/// Dropping those items silently made the model receive an empty tool result
+/// (issue #2). Unknown items are preserved as text blocks instead.
+pub(crate) fn content_blocks_from_values(
+    values: Vec<serde_json::Value>,
+) -> Vec<pi_agent_core::pi_ai_types::ContentBlock> {
+    values
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value::<pi_agent_core::pi_ai_types::ContentBlock>(value.clone())
+                .unwrap_or_else(|_| {
+                    let text = match value {
+                        serde_json::Value::String(text) => text,
+                        other => serde_json::to_string(&other).unwrap_or_else(|_| other.to_string()),
+                    };
+                    pi_agent_core::pi_ai_types::text_block(text)
+                })
+        })
+        .collect()
+}
+
 /// Convert an extension tool output into the core result shape. Failed outputs
 /// are returned as [`ToolExecutionError`] so the agent loop can preserve the
 /// structured content/details while still marking the tool result as an error.
 pub(crate) fn tool_call_output_to_agent_result(
     output: ToolCallOutput,
 ) -> Result<AgentToolResult<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
-    let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-        .content
-        .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect();
+    let content = content_blocks_from_values(output.content);
     let message = content
         .iter()
         .filter_map(|block| match block {
@@ -94,11 +114,7 @@ where
             let exec = exec.clone();
             Box::pin(async move {
                 let output = exec(id.clone(), params, signal).await?;
-                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-                    .content
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect();
+                let content = content_blocks_from_values(output.content);
                 let details: TDetails = output
                     .details
                     .map(|v| {
@@ -340,5 +356,59 @@ mod tests {
         let tool = wrap_tool_definition::<()>(def);
         assert_eq!(tool.name, "simple_tool");
         assert_eq!(tool.parameters_schema, serde_json::Value::Null);
+    }
+
+    /// Issue #2: bare JSON content must not be dropped.
+    #[test]
+    fn bare_json_content_is_preserved_as_text() {
+        let blocks = content_blocks_from_values(vec![serde_json::json!({"ok": true})]);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                assert!(text.contains("\"ok\":true"), "{text}");
+            }
+            other => panic!("expected text fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mixed_valid_and_invalid_content_keeps_both() {
+        let blocks = content_blocks_from_values(vec![
+            serde_json::json!({"type": "text", "text": "valid"}),
+            serde_json::json!({"automations": [1, 2]}),
+            serde_json::json!("plain string"),
+        ]);
+        assert_eq!(blocks.len(), 3);
+        match &blocks[0] {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "valid")
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+        match &blocks[2] {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "plain string")
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    /// The full conversion path must not produce an empty model-facing result.
+    #[test]
+    fn tool_output_with_bare_json_is_not_empty() {
+        let result = tool_call_output_to_agent_result(ToolCallOutput {
+            content: vec![serde_json::json!({"automations": [{"id": 1}]})],
+            details: None,
+            is_error: false,
+            terminate: None,
+        })
+        .unwrap();
+        assert_eq!(result.content.len(), 1);
+        match &result.content[0] {
+            pi_agent_core::pi_ai_types::ContentBlock::Text { text, .. } => {
+                assert!(text.contains("automations"), "{text}");
+            }
+            other => panic!("expected text fallback, got {other:?}"),
+        }
     }
 }

@@ -191,10 +191,10 @@ pub async fn dispatch_tool_result(
                 || details != original_details
                 || is_error != ctx.is_error
             {
-                let content: Vec<ContentBlock> = content_json
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect();
+                let content =
+                    crate::core::tools::tool_definition_wrapper::content_blocks_from_values(
+                        content_json,
+                    );
                 Some(AfterToolCallResult {
                     content: Some(content),
                     details,

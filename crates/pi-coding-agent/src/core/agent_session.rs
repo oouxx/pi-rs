@@ -1364,11 +1364,7 @@ impl AgentSession {
                     let on_update: pi_extension_api::ToolUpdateFn = match on_update {
                         Some(callback) => {
                             Arc::new(move |output: pi_extension_api::ToolCallOutput| {
-                                let content: Vec<pi_agent_core::pi_ai_types::ContentBlock> = output
-                                    .content
-                                    .into_iter()
-                                    .filter_map(|v| serde_json::from_value(v).ok())
-                                    .collect();
+                                let content = crate::core::tools::tool_definition_wrapper::content_blocks_from_values(output.content);
                                 callback(AgentToolResult {
                                     content,
                                     details: output.details.unwrap_or(serde_json::Value::Null),

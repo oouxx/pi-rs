@@ -407,12 +407,37 @@ impl std::fmt::Debug for ToolDefinition {
 // ============================================================================
 
 /// Output from a tool call handled by an extension.
+///
+/// `content` entries should be `pi-ai` `ContentBlock`-shaped JSON:
+/// `{"type":"text","text":"..."}` or `{"type":"image","data":"...","mimeType":"..."}`.
+/// Items that are bare JSON, strings, or an unknown block type are preserved
+/// as text blocks by the host instead of being dropped (issue #2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallOutput {
+    /// Model-facing content blocks.
     pub content: Vec<Value>,
+    /// Structured details kept out of the model-facing content.
     pub details: Option<Value>,
+    /// Whether the tool failed.
     pub is_error: bool,
+    /// Ask the agent loop to stop after this result.
     pub terminate: Option<bool>,
+}
+
+impl ToolCallOutput {
+    /// A successful text-only result.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            content: vec![serde_json::json!({
+                "type": "text",
+                "text": text.into(),
+            })],
+            details: None,
+            is_error: false,
+            terminate: None,
+        }
+    }
 }
 
 // ============================================================================

@@ -7,7 +7,6 @@ use pi_coding_agent::core::model_registry::ModelRegistry;
 use pi_coding_agent::pi_ai_types::Model;
 
 const EXIT_SUCCESS: i32 = 0;
-const EXIT_FAILURE: i32 = 1;
 
 fn supports_images(model: &Model) -> bool {
     model.input.iter().any(|i| i == "image")
@@ -91,28 +90,42 @@ pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<
     // discovery.
     let all_models = model_registry.get_models();
 
-    // Filter by search pattern if provided
-    let mut matched: Vec<Model> = if let Some(pattern) = search_pattern {
-        let pattern_lower = pattern.to_lowercase();
-        all_models
-            .into_iter()
-            .filter(|m| {
-                m.id.to_lowercase().contains(&pattern_lower)
-                    || m.provider.to_lowercase().contains(&pattern_lower)
-                    || m.name.to_lowercase().contains(&pattern_lower)
-            })
-            .collect()
-    } else {
-        all_models
+    if all_models.is_empty() {
+        // TS `listModels`: stdout + exit 0, with the login guidance.
+        let docs = pi_coding_agent::config::get_docs_path();
+        println!(
+            "{}",
+            pi_coding_agent::core::auth_guidance::format_no_models_available_message(
+                &docs.to_string_lossy()
+            )
+        );
+        return EXIT_SUCCESS;
+    }
+
+    // Filter by search pattern if provided. TS `fuzzyFilter(models, pattern,
+    // (m) => `${m.provider} ${m.id}`)` — fuzzy over provider + id, not a
+    // substring match over the display name.
+    let mut matched: Vec<Model> = match search_pattern {
+        Some(pattern) if !pattern.trim().is_empty() => {
+            let indices =
+                pi_coding_agent::pi_tui::fuzzy::fuzzy_filter_indices(&all_models, pattern, |m| {
+                    format!("{} {}", m.provider, m.id)
+                });
+            indices
+                .into_iter()
+                .map(|(i, _)| all_models[i].clone())
+                .collect()
+        }
+        _ => all_models,
     };
 
     if matched.is_empty() {
+        // TS: `console.log(...)` and a normal return (exit 0) — an empty
+        // search result is not an error.
         if let Some(pattern) = search_pattern {
-            eprintln!("No models matching '{}'", pattern);
-        } else {
-            eprintln!("No models available.");
+            println!("No models matching \"{pattern}\"");
         }
-        return EXIT_FAILURE;
+        return EXIT_SUCCESS;
     }
 
     // Sort by provider then by id
@@ -121,8 +134,10 @@ pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<
     let widths = calculate_column_widths(&matched);
 
     // ── Header ──────────────────────────────────────────────────────────
+    // TS pads **every** column with `padEnd` (left-aligned) and prints no
+    // separator line.
     println!(
-        "{:<pw$}  {:<mw$}  {:>cw$}  {:>tw$}  {:<rw$}  {:<iw$}",
+        "{:<pw$}  {:<mw$}  {:<cw$}  {:<tw$}  {:<rw$}  {:<iw$}",
         "provider",
         "model",
         "context",
@@ -137,27 +152,13 @@ pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<
         iw = widths.images,
     );
 
-    // ── Separator ───────────────────────────────────────────────────────
-    let total = widths.provider
-        + 2
-        + widths.model
-        + 2
-        + widths.context
-        + 2
-        + widths.max_out
-        + 2
-        + widths.thinking
-        + 2
-        + widths.images;
-    println!("{}", "-".repeat(total));
-
     // ── Rows ────────────────────────────────────────────────────────────
     for model in &matched {
         let thinking_str = if model.reasoning { "yes" } else { "no" };
         let images_str = if supports_images(model) { "yes" } else { "no" };
 
         println!(
-            "{:<pw$}  {:<mw$}  {:>cw$}  {:>tw$}  {:<rw$}  {:<iw$}",
+            "{:<pw$}  {:<mw$}  {:<cw$}  {:<tw$}  {:<rw$}  {:<iw$}",
             model.provider,
             model.id,
             format_token_count(model.context_window),
@@ -255,13 +256,26 @@ mod tests {
         }
     }
 
+    /// TS `listModels` prints `No models matching "..."` and returns normally:
+    /// an empty search result is not an error exit.
     #[test]
-    fn test_list_models_search_no_match_returns_failure() {
+    fn test_list_models_search_no_match_is_not_an_error() {
         let registry = ModelRegistry::new(sample_models());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(list_models(&registry, Some("zzzznotfound")));
-        assert_eq!(result, EXIT_FAILURE);
+        assert_eq!(result, EXIT_SUCCESS);
+    }
+
+    /// TS filters with `fuzzyFilter(models, pattern, (m) => provider + " " + id)`,
+    /// so a subsequence of `provider id` matches even when it is not a substring.
+    #[test]
+    fn test_list_models_search_is_fuzzy_over_provider_and_id() {
+        let registry = ModelRegistry::new(sample_models());
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(list_models(&registry, Some("antson")));
+        assert_eq!(result, EXIT_SUCCESS, "subsequence of claude-sonnet ids");
     }
 
     #[test]

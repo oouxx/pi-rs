@@ -470,6 +470,10 @@ pub async fn run_rpc_mode(
             return 1;
         }
     };
+    // TS `ctx.mode = "rpc"` (rpc-mode.ts) — extensions branch on it.
+    let mut session = session;
+    session.set_extension_mode(pi_extension_api::extension_mode::RPC);
+
     // Shared so the prompt command can run in its own task while the command
     // loop keeps reading stdin (TS does not await `session.prompt`).
     let session = Arc::new(session);

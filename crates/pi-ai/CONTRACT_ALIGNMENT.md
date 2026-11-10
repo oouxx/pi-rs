@@ -94,3 +94,11 @@
 | `Model.inputLimits` | `inputLimits?: {maxRequestBytes?, images?: {resize?: {maxWidth,maxHeight,maxBytes,jpegQuality}, maxPerMessage?, maxPerRequest?}}`，生成器为图像模型产出并发给消费端 | 同名字段 `input_limits`（wire `inputLimits`，camelCase，缺省不序列化）；消费端见 `pi-coding-agent` 的 `ResizeProfile` / `tool_result_images` | 是（数据待生成器补） | 目录快照暂无该元数据，模型级配置（`models.json`）已生效 |
 | `AssistantMessage.providerThinkingLevel` | managed-effort 模型记录本轮实际 effort（`options.effort ?? "high"`），回放时映射回逐轮 `output_config` 系统消息 | 同名 `provider_thinking_level`（wire `providerThinkingLevel`）；Anthropic 请求侧按 `assistant_levels` 逐轮插入标记 | 是（2026-10-26） | 见 `PORTING_MISTAKES.md` |
 | OpenAI `reasoning_details` | 流式增量合并进 thinking signature（序列化一次），回放优先用它而不是原始 reasoning 字段 | 同左（`append_openai_reasoning_detail` + `parse_openai_reasoning_details` + legacy toolCall fallback） | 是（2026-10-26） | 同上 |
+
+## 工具定义与约束采样
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| `Tool.constrainedSampling` | 可选，`false \| {type:"json_schema"\|"grammar", ...}` | `Option<ConstrainedSamplingConfig>`，wire 键 `constrainedSampling`；`false`/`null`/缺省都折叠为 `None` | 是（`false` 与缺省在 provider 侧等价） | 修复见 PORTING_MISTAKES.md |
+| `GrammarVariants` 键名 | `GrammarFormat = "openai_lark" \| "openai_regex"`（snake_case） | 同左（`openai_lark`/`openai_regex`） | 是 | 修复见 PORTING_MISTAKES.md |
+

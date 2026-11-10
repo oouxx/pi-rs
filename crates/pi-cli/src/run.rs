@@ -784,8 +784,15 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     // updates the application binary itself; `pi update --all` / `pi update
     // <source>` target extensions and are delegated to the package manager.
     if cmd == "update" {
-        let ext_update = args.iter().any(|a| a == "--all" || a == "-a")
+        let ext_update = args
+            .iter()
+            .any(|a| a == "--all" || a == "-a" || a == "--extensions" || a == "--extension")
             || args.iter().any(|a| !a.starts_with('-'));
+        // TS `pi update --models` refreshes the model catalogs; this port
+        // exposes the same work as `pi refresh`.
+        if !ext_update && args.iter().any(|a| a == "--models") {
+            return handle_refresh_command(&[], &cwd, &agent_dir).await;
+        }
         if !ext_update {
             return crate::update::run_update(args).await;
         }
@@ -902,12 +909,42 @@ async fn handle_refresh_command(args: &[String], cwd: &str, agent_dir: &std::pat
 }
 
 /// Handle the `config` subcommand: show or set configuration values.
+///
+/// `pi config` / `pi config list` prints the effective settings; `pi config
+/// <key> <value>` persists one value (`--local` writes the project scope
+/// instead of the global one). The TS original only offers the interactive
+/// `selectConfig` panel (`pi config [-l|--local]`, see `DEVIATIONS.md` #24) —
+/// the key/value form is this port's non-interactive equivalent, and it must
+/// actually write the file (previously it printed "Setting …" and did nothing).
 async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
     use pi_coding_agent::core::settings_manager::SettingsManager;
 
-    let settings = SettingsManager::create(cwd, Some(agent_dir));
+    let mut settings = SettingsManager::create(cwd, Some(agent_dir));
 
-    if args.is_empty() || args.first().map(|s| s.as_str()) == Some("list") {
+    let mut local = false;
+    let mut positional: Vec<&String> = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "-l" | "--local" => local = true,
+            "-h" | "--help" => {
+                println!("Usage: pi config [list]");
+                println!("       pi config <key> <value> [-l|--local]");
+                println!("       keys: model, provider, theme, thinking_level");
+                return EXIT_SUCCESS;
+            }
+            flag if flag.starts_with('-') => {
+                eprintln!(
+                    "{} Unknown option {flag} for \"config\"",
+                    "Error:".red().bold()
+                );
+                eprintln!("  Usage: pi config [list|<key> <value>] [-l|--local]");
+                return EXIT_FAILURE;
+            }
+            _ => positional.push(arg),
+        }
+    }
+
+    if positional.is_empty() || positional.first().map(|s| s.as_str()) == Some("list") {
         // Show current configuration
         let global = settings.get_global_settings();
         let project = settings.get_project_settings();
@@ -927,27 +964,60 @@ async fn handle_config_command(args: &[String], cwd: &str, agent_dir: &str) -> i
         println!("  thinking_level: {:?}", project.default_thinking_level);
 
         EXIT_SUCCESS
-    } else if args.len() >= 2 {
-        // Set a configuration value: config <key> <value>
-        let key = &args[0];
-        let value = &args[1];
+    } else if positional.len() == 2 {
+        // Set a configuration value: config <key> <value> [--local]
+        let key = positional[0].clone();
+        let value = positional[1].clone();
 
-        match key.as_str() {
-            "model" | "provider" | "theme" | "thinking_level" => {
-                // These are stored in settings
-                eprintln!("Setting {key} to {value}...");
-                // TODO: wire up actual settings persistence
-                EXIT_SUCCESS
+        let applied = match key.as_str() {
+            "model" => {
+                if local {
+                    settings.set_project("defaultModel", serde_json::json!(value));
+                } else {
+                    settings.set_default_model(&value);
+                }
+                true
             }
-            _ => {
-                eprintln!("{} Unknown config key: {key}", "Error:".red().bold());
-                eprintln!("  Valid keys: model, provider, theme, thinking_level");
-                EXIT_FAILURE
+            "provider" => {
+                if local {
+                    settings.set_project("defaultProvider", serde_json::json!(value));
+                } else {
+                    settings.set_default_provider(&value);
+                }
+                true
             }
+            "theme" => {
+                if local {
+                    settings.set_project("theme", serde_json::json!(value));
+                } else {
+                    settings.set_theme(&value);
+                }
+                true
+            }
+            "thinking_level" => {
+                if local {
+                    settings.set_project("defaultThinkingLevel", serde_json::json!(value));
+                } else {
+                    settings.set_default_thinking_level(&value);
+                }
+                true
+            }
+            _ => false,
+        };
+
+        if !applied {
+            eprintln!("{} Unknown config key: {key}", "Error:".red().bold());
+            eprintln!("  Valid keys: model, provider, theme, thinking_level");
+            return EXIT_FAILURE;
         }
+        println!(
+            "Set {key} = {value} ({})",
+            if local { "project" } else { "global" }
+        );
+        EXIT_SUCCESS
     } else {
         eprintln!(
-            "{} Usage: pi config [list|<key> <value>]",
+            "{} Usage: pi config [list|<key> <value>] [-l|--local]",
             "Error:".red().bold()
         );
         EXIT_FAILURE

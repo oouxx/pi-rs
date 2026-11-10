@@ -3425,8 +3425,12 @@ pub async fn run_interactive_mode(mut session: AgentSession) -> i32 {
                         }
                         Action::Key(key)
                     }
-                    pi_tui::terminal::InputEvent::ScrollUp => Action::Agent(pi_tui::Msg::ScrollUp(3)),
-                    pi_tui::terminal::InputEvent::ScrollDown => Action::Agent(pi_tui::Msg::ScrollDown(3)),
+                    pi_tui::terminal::InputEvent::ScrollUp(lines) => {
+                        Action::Agent(pi_tui::Msg::ScrollUp(lines))
+                    }
+                    pi_tui::terminal::InputEvent::ScrollDown(lines) => {
+                        Action::Agent(pi_tui::Msg::ScrollDown(lines))
+                    }
                     // Non-wheel mouse events drive app-owned text selection
                     // (TS `TuiAltScreen.handleMouseEvent`). Pure motion events
                     // (`?1003h` all-motion tracking) carry no selection

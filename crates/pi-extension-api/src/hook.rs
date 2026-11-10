@@ -264,6 +264,52 @@ impl FlagRegistry {
 }
 
 // ============================================================================
+// `tool_result` payloads
+// ============================================================================
+
+/// TS `ToolResultEvent`: everything an extension can observe about a finished
+/// tool call. `content`/`details` are the JSON forms of `ContentBlock` /
+/// tool details, so this crate stays independent of `pi-agent-core`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolResultHookEvent {
+    /// `toolCallId` — lets a handler correlate with `tool_call` events.
+    pub tool_call_id: String,
+    /// `toolName`.
+    pub tool_name: String,
+    /// `input` — the arguments the model produced for this call.
+    pub input: Value,
+    /// `content` — `TextContent`/`ImageContent` blocks as JSON.
+    pub content: Vec<Value>,
+    /// `details` — tool-specific structured details.
+    pub details: Option<Value>,
+    /// `isError` — whether the call failed (non-zero exit, thrown error, ...).
+    pub is_error: bool,
+    /// `usage` — usage reported by the tool execution itself, when available.
+    pub usage: Option<Value>,
+}
+
+/// TS `ToolResultEventResult`: the fields a `tool_result` handler may override.
+/// `None` (the default) keeps the value the tool produced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolResultHookPatch {
+    pub content: Option<Vec<Value>>,
+    pub details: Option<Value>,
+    pub is_error: Option<bool>,
+    pub usage: Option<Value>,
+}
+
+impl ToolResultHookPatch {
+    /// Whether the patch changes anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.content.is_none()
+            && self.details.is_none()
+            && self.is_error.is_none()
+            && self.usage.is_none()
+    }
+}
+
+// ============================================================================
 // HookHandler trait
 // ============================================================================
 
@@ -588,29 +634,25 @@ pub trait HookHandler: Send + Sync {
         HookResult::Continue((_tool_name, _args))
     }
 
-    /// 工具调用后触发。可修改结果。
+    /// 工具调用后触发（通知，不可改结果）。对齐 TS `tool_result` 监听器：
+    /// 收到完整 [`ToolResultHookEvent`]。
     async fn after_tool_call(
         &self,
-        _tool_name: &str,
-        _result: &Value,
-        _is_error: bool,
+        _event: &ToolResultHookEvent,
         _ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         HookResult::Continue(())
     }
 
-    /// 工具结果处理（modifying 版本）。
-    /// 可以修改工具结果的内容（JSON 序列化后的 `ContentBlock` 列表）、详情和错误状态。
-    /// 按 priority 顺序执行。
+    /// 工具结果处理（modifying 版本，对齐 TS `ToolResultEventResult`）。
+    /// 可以修改内容（JSON 序列化后的 `ContentBlock` 列表）、详情、错误状态和
+    /// 工具自身 usage。按 priority 顺序执行。
     async fn on_tool_result_mut(
         &self,
-        _tool_name: &str,
-        _content: Vec<Value>,
-        _details: Option<Value>,
-        _is_error: bool,
+        _event: &ToolResultHookEvent,
         _ctx: &crate::ExtensionContext,
-    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
-        HookResult::Continue((_content, _details, _is_error))
+    ) -> HookResult<ToolResultHookPatch> {
+        HookResult::Continue(ToolResultHookPatch::default())
     }
 
     /// Agent 开始前触发。可修改 prompt 和 `system_prompt`，或取消。
@@ -1342,16 +1384,11 @@ impl HookRunner {
     /// Run `after_tool_call` handlers in priority order. Returns Cancel on first cancel.
     pub async fn run_after_tool_call(
         &self,
-        tool_name: &str,
-        result: &Value,
-        is_error: bool,
+        event: &ToolResultHookEvent,
         ctx: &crate::ExtensionContext,
     ) -> HookResult<()> {
         for handler in &self.handlers {
-            match handler
-                .after_tool_call(tool_name, result, is_error, ctx)
-                .await
-            {
+            match handler.after_tool_call(event, ctx).await {
                 HookResult::Continue(()) => {}
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1360,29 +1397,31 @@ impl HookRunner {
     }
 
     /// Run `on_tool_result_mut` handlers in priority order.
-    /// Returns the (possibly modified) content, details, and `is_error`.
+    ///
+    /// Each handler sees the result produced by the previous one (TS
+    /// `ExtensionHandler<ToolResultEvent, ToolResultEventResult>` sequencing:
+    /// later handlers observe the patched values).
     pub async fn run_on_tool_result(
         &self,
-        tool_name: &str,
-        content: Vec<Value>,
-        details: Option<Value>,
-        is_error: bool,
+        event: ToolResultHookEvent,
         ctx: &crate::ExtensionContext,
-    ) -> HookResult<(Vec<Value>, Option<Value>, bool)> {
-        let mut current = (content, details, is_error);
+    ) -> HookResult<ToolResultHookEvent> {
+        let mut current = event;
         for handler in &self.handlers {
-            match handler
-                .on_tool_result_mut(
-                    tool_name,
-                    current.0.clone(),
-                    current.1.clone(),
-                    current.2,
-                    ctx,
-                )
-                .await
-            {
-                HookResult::Continue((c, d, e)) => {
-                    current = (c, d, e);
+            match handler.on_tool_result_mut(&current, ctx).await {
+                HookResult::Continue(patch) => {
+                    if let Some(content) = patch.content {
+                        current.content = content;
+                    }
+                    if let Some(details) = patch.details {
+                        current.details = Some(details);
+                    }
+                    if let Some(is_error) = patch.is_error {
+                        current.is_error = is_error;
+                    }
+                    if let Some(usage) = patch.usage {
+                        current.usage = Some(usage);
+                    }
                 }
                 HookResult::Cancel(reason) => return HookResult::Cancel(reason),
             }
@@ -1691,6 +1730,98 @@ mod tests {
             crate::ExtensionUIContext::noop(),
             crate::RuntimeHandle::noop(),
         )
+    }
+
+    struct ToolResultHandler {
+        name: String,
+        patch_usage: bool,
+        patch_content: bool,
+    }
+
+    #[async_trait]
+    impl HookHandler for ToolResultHandler {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        async fn on_tool_result_mut(
+            &self,
+            event: &ToolResultHookEvent,
+            _ctx: &crate::ExtensionContext,
+        ) -> HookResult<ToolResultHookPatch> {
+            // TS `ToolResultEvent`: the handler can see the call id and the
+            // model's arguments, not just the result.
+            assert_eq!(event.tool_call_id, "call-1");
+            assert_eq!(event.input["command"], "ls");
+            assert!(event.is_error);
+            HookResult::Continue(ToolResultHookPatch {
+                content: self
+                    .patch_content
+                    .then(|| vec![serde_json::json!({"type": "text", "text": "patched"})]),
+                details: None,
+                is_error: self.patch_content.then_some(false),
+                usage: self
+                    .patch_usage
+                    .then(|| serde_json::json!({"inputTokens": 7, "outputTokens": 0})),
+            })
+        }
+    }
+
+    fn tool_result_event() -> ToolResultHookEvent {
+        ToolResultHookEvent {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+            content: vec![serde_json::json!({"type": "text", "text": "orig"})],
+            details: Some(serde_json::json!({})),
+            is_error: true,
+            usage: None,
+        }
+    }
+
+    /// `tool_result` handlers see `toolCallId` / `input` and can override the
+    /// tool's own `usage` (TS `ToolResultEventResult.usage`).
+    #[tokio::test]
+    async fn tool_result_payload_and_usage_patch() {
+        let runner = compact_runner(vec![Box::new(ToolResultHandler {
+            name: "h".to_string(),
+            patch_usage: true,
+            patch_content: false,
+        })]);
+        match runner
+            .run_on_tool_result(tool_result_event(), &no_ctx())
+            .await
+        {
+            HookResult::Continue(patched) => {
+                assert_eq!(
+                    patched.usage,
+                    Some(serde_json::json!({"inputTokens": 7, "outputTokens": 0}))
+                );
+                assert_eq!(patched.content, tool_result_event().content);
+                assert!(patched.is_error, "isError untouched by this patch");
+            }
+            HookResult::Cancel(_) => panic!("must not cancel"),
+        }
+    }
+
+    /// Content/isError overrides still work and unset fields keep their value.
+    #[tokio::test]
+    async fn tool_result_content_patch() {
+        let runner = compact_runner(vec![Box::new(ToolResultHandler {
+            name: "h".to_string(),
+            patch_usage: false,
+            patch_content: true,
+        })]);
+        match runner
+            .run_on_tool_result(tool_result_event(), &no_ctx())
+            .await
+        {
+            HookResult::Continue(patched) => {
+                assert_eq!(patched.content[0]["text"], "patched");
+                assert!(!patched.is_error);
+                assert_eq!(patched.usage, None);
+            }
+            HookResult::Cancel(_) => panic!("must not cancel"),
+        }
     }
 
     /// The handler sees the whole preparation/branch/instructions payload, and a

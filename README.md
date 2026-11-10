@@ -97,7 +97,7 @@ pi-rs --export <会话文件.jsonl> # 导出会话为 HTML
 | `--skills <PATH>` | 追加 skill 目录或 `.md` 文件（可重复） |
 | `--trust` / `--no-trust` | 本会话信任 / 不信任项目（覆盖已存决策与默认策略） |
 | `--default-trust <ask\|always\|never>` | 覆盖本会话的 `defaultProjectTrust` 策略 |
-| `--list-models [PATTERN]` | 列出可用模型（可按关键字过滤） |
+| `--list-models [PATTERN]` | 列出可用模型（按 `provider + id` 模糊匹配；无命中时正常退出） |
 | `-h, --help` | 查看完整帮助 |
 
 持久化初始工具集：在 `~/.pi-rs/agent/settings.json` 或项目 `.pi-rs/settings.json` 里设置
@@ -148,7 +148,10 @@ usage 统计），`Ctrl+O` 展开；运行中会跟着子 agent 的每条消息�
 ## 子命令
 
 ```bash
-pi-rs update                  # 更新到最新 GitHub Release
+pi-rs update                  # 更新到最新 GitHub Release（--check/--force）
+pi-rs update --models         # 刷新模型目录（等价于 pi-rs refresh）
+pi-rs config list             # 查看当前生效的配置
+pi-rs config <key> <value>    # 写入配置（model/provider/theme/thinking_level，加 -l 写项目级）
 pi-rs install <source>        # 安装扩展包
 pi-rs remove <name>           # 移除扩展
 pi-rs list                    # 列出已安装扩展

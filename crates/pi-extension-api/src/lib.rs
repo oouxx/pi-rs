@@ -469,15 +469,31 @@ pub struct ToolInfo {
 // ExtensionContext
 // ============================================================================
 
+/// TS `ExtensionMode` = `"tui" | "rpc" | "json" | "print"`.
+///
+/// The host sets exactly one of these on [`ExtensionContext::mode`]; extensions
+/// use it to decide whether to show TUI-only menus (`tui`) or ask for input at
+/// all. The default is [`extension_mode::PRINT`], matching the TS runner.
+pub mod extension_mode {
+    /// Interactive TUI (`pi`).
+    pub const TUI: &str = "tui";
+    /// RPC mode (`pi --mode rpc`).
+    pub const RPC: &str = "rpc";
+    /// JSON event stream (`pi --mode json`).
+    pub const JSON: &str = "json";
+    /// Plain text print mode (`pi -p`) and every non-interactive host default.
+    pub const PRINT: &str = "print";
+}
+
 /// Context provided to extensions for interacting with the agent.
 #[derive(Clone)]
 pub struct ExtensionContext {
     pub session_id: String,
     pub is_connected: bool,
-    /// 运行模式（对齐 TS `ctx.mode`）：`"tui"`（interactive TUI）、
-    /// `"cli"`、`"headless"`。扩展据此决定是否展示 TUI 交互菜单。
-    /// 默认 `"cli"`，interactive 模式启动时
-    /// 通过 [`Self::set_mode`] 置为 `"tui"`。
+    /// 运行模式（对齐 TS `ctx.mode`）：见 [`extension_mode`]——
+    /// `"tui"` / `"rpc"` / `"json"` / `"print"`。扩展据此决定是否展示
+    /// TUI 交互菜单。默认 `"print"`（TS runner 默认值），interactive
+    /// 模式启动时通过 [`Self::set_mode`] 置为 `"tui"`。
     pub mode: String,
     /// 是否绑定了真实 UI（对齐 TS `ctx.hasUI` = `uiContext !== noOpUIContext`）。
     ///
@@ -496,7 +512,7 @@ pub struct ExtensionContext {
 
 impl ExtensionContext {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         session_id: String,
         is_connected: bool,
         ui: ExtensionUIContext,
@@ -505,7 +521,7 @@ impl ExtensionContext {
         Self {
             session_id,
             is_connected,
-            mode: String::new(),
+            mode: extension_mode::PRINT.to_string(),
             has_ui: false,
             is_project_trusted: false,
             ui,
@@ -513,7 +529,8 @@ impl ExtensionContext {
         }
     }
 
-    /// 设置运行模式（`"tui"` / `"cli"` / `"headless"`）。
+    /// 设置运行模式（`"tui"` / `"rpc"` / `"json"` / `"print"`，见
+    /// [`extension_mode`]）。
     pub fn set_mode(&mut self, mode: impl Into<String>) {
         self.mode = mode.into();
     }

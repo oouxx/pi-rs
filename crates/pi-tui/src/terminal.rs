@@ -8,12 +8,17 @@ use std::io::{self, stdout, Stdout};
 
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
-    EventStream, KeyEvent, MouseEvent, MouseEventKind,
+    EventStream, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+
+/// TS `AltScreenOptions.wheelScrollLines` default: logical lines per wheel event.
+const WHEEL_SCROLL_LINES: u16 = 1;
+/// TS `ALT_WHEEL_SCROLL_MULTIPLIER`: Alt makes one wheel notch scroll further.
+const ALT_WHEEL_SCROLL_MULTIPLIER: u16 = 5;
 
 /// Terminal abstraction wrapping ratatui's CrosstermBackend.
 pub struct Terminal {
@@ -81,15 +86,22 @@ impl Terminal {
                                 let _ = input_tx.send(InputEvent::Paste(text));
                             }
                             Some(Ok(Event::Mouse(m))) => {
-                                // 滚轮 → 滚动事件（wheelScrollLines = 1，对齐 TS）；
+                                // 滚轮 → 滚动事件（TS `getWheelScrollLines`：
+                                // `wheelScrollLines` 默认 1，按住 Alt 时 ×
+                                // `ALT_WHEEL_SCROLL_MULTIPLIER`=5）；
                                 // 其余鼠标事件（press/drag/release/move）转发给
                                 // app-owned 文本选择（TS `handleMouseEvent`）。
+                                let wheel_lines: u16 = if m.modifiers.contains(KeyModifiers::ALT) {
+                                    WHEEL_SCROLL_LINES * ALT_WHEEL_SCROLL_MULTIPLIER
+                                } else {
+                                    WHEEL_SCROLL_LINES
+                                };
                                 match m.kind {
                                     MouseEventKind::ScrollUp => {
-                                        let _ = input_tx.send(InputEvent::ScrollUp);
+                                        let _ = input_tx.send(InputEvent::ScrollUp(wheel_lines));
                                     }
                                     MouseEventKind::ScrollDown => {
-                                        let _ = input_tx.send(InputEvent::ScrollDown);
+                                        let _ = input_tx.send(InputEvent::ScrollDown(wheel_lines));
                                     }
                                     _ => {
                                         let _ = input_tx.send(InputEvent::Mouse(m));
@@ -156,8 +168,12 @@ impl Terminal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     Key(KeyEvent),
-    ScrollUp,
-    ScrollDown,
+    /// Mouse wheel up, carrying `wheelScrollLines` (TS `getWheelScrollLines`:
+    /// `wheelScrollLines` — default 1 — times `ALT_WHEEL_SCROLL_MULTIPLIER`
+    /// (5) when Alt is held).
+    ScrollUp(u16),
+    /// Mouse wheel down; same payload semantics as [`InputEvent::ScrollUp`].
+    ScrollDown(u16),
     /// Terminal resize (crossterm `Event::Resize`) — must reach the model so
     /// the transcript re-wraps and the screen fully repaints.
     Resize(u16, u16),

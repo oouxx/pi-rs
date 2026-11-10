@@ -894,8 +894,10 @@ pub enum ModelCompat {
 // ============================================================================
 
 /// Grammar format variants for constrained sampling.
+///
+/// TS `GrammarFormat = "openai_lark" | "openai_regex"` — the wire keys are
+/// **snake_case** (not camelCase like the rest of the provider compat surface).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct GrammarVariants {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_lark: Option<String>,
@@ -924,8 +926,37 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "constrainedSampling",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_constrained_sampling"
+    )]
     pub constrained_sampling: Option<ConstrainedSamplingConfig>,
+}
+
+/// Deserialize TS `constrainedSampling?: false | ConstrainedSamplingConfig`.
+///
+/// `false` explicitly disables constrained sampling; `null` and an absent key are
+/// equivalent to no constraint. All three collapse to `None` — providers only
+/// act on a present config, so the observable request is identical.
+fn deserialize_constrained_sampling<'de, D>(
+    deserializer: D,
+) -> Result<Option<ConstrainedSamplingConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Bool(false)) => Ok(None),
+        Some(serde_json::Value::Bool(true)) => Err(D::Error::custom(
+            "constrainedSampling must be false or a constrained sampling config",
+        )),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(D::Error::custom),
+    }
 }
 
 /// A reference to a tool by name (TS `ToolReference`), used by system-message
@@ -1370,6 +1401,55 @@ pub struct ImagesModel {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// TS `Tool.constrainedSampling` / `GrammarVariants` wire shape:
+    /// camelCase field name, snake_case grammar-format keys, `false` accepted.
+    #[test]
+    fn constrained_sampling_wire_shape_matches_ts() {
+        let tool = Tool {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            constrained_sampling: Some(ConstrainedSamplingConfig::Grammar {
+                variants: GrammarVariants {
+                    openai_lark: Some("start: x".into()),
+                    openai_regex: None,
+                },
+            }),
+        };
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert_eq!(
+            wire["constrainedSampling"],
+            serde_json::json!({"type": "grammar", "variants": {"openai_lark": "start: x"}})
+        );
+        assert!(wire.get("constrained_sampling").is_none());
+
+        // Round-trip through the TS shape.
+        let parsed: Tool = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, tool);
+
+        // `constrainedSampling: false` disables sampling instead of failing.
+        for value in [serde_json::json!(false), serde_json::Value::Null] {
+            let mut raw = serde_json::json!({
+                "name": "t",
+                "description": "d",
+                "parameters": {"type": "object"}
+            });
+            raw["constrainedSampling"] = value;
+            let parsed: Tool = serde_json::from_value(raw).unwrap();
+            assert_eq!(parsed.constrained_sampling, None);
+        }
+
+        // Absent key stays absent on the wire.
+        let plain = Tool {
+            constrained_sampling: None,
+            ..tool
+        };
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("constrainedSampling")
+            .is_none());
+    }
 
     /// `SystemMessage` serializes to the TS wire shape and round-trips, and the
     /// transcript helpers can replay a typed system message.

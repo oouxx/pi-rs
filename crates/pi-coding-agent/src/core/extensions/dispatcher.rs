@@ -130,16 +130,44 @@ pub async fn dispatch_tool_call(
 // tool_result (after_tool_call) — field merge
 // ============================================================================
 
+/// Build the `tool_result` hook event from an `AfterToolCallContext`
+/// (TS `ToolResultEvent`: `toolCallId` / `input` / `usage` included so a
+/// handler can correlate the call and rewrite the tool's own usage).
+pub fn tool_result_hook_event(
+    ctx: &AfterToolCallContext,
+) -> pi_extension_api::hook::ToolResultHookEvent {
+    pi_extension_api::hook::ToolResultHookEvent {
+        tool_call_id: ctx.tool_call.id.clone(),
+        tool_name: ctx.tool_call.name.clone(),
+        input: ctx.args.clone(),
+        content: ctx
+            .result
+            .content
+            .iter()
+            .map(|c| serde_json::to_value(c).unwrap_or_default())
+            .collect(),
+        details: Some(ctx.result.details.clone()),
+        is_error: ctx.is_error,
+        usage: ctx
+            .result
+            .usage
+            .as_ref()
+            .and_then(|u| serde_json::to_value(u).ok()),
+    }
+}
+
 /// Build the `tool_result` event payload from an `AfterToolCallContext`.
 pub fn tool_result_payload(ctx: &AfterToolCallContext) -> serde_json::Value {
+    let event = tool_result_hook_event(ctx);
     serde_json::json!({
         "type": "tool_result",
-        "toolCallId": ctx.tool_call.id,
-        "toolName": ctx.tool_call.name,
-        "input": ctx.args,
-        "content": ctx.result.content,
-        "details": ctx.result.details,
-        "isError": ctx.is_error,
+        "toolCallId": event.tool_call_id,
+        "toolName": event.tool_name,
+        "input": event.input,
+        "content": event.content,
+        "details": event.details,
+        "isError": event.is_error,
+        "usage": event.usage,
     })
 }
 
@@ -151,61 +179,35 @@ pub async fn dispatch_tool_result(
     ctx: &AfterToolCallContext,
     ext_ctx: &ExtensionContext,
 ) -> Option<AfterToolCallResult> {
-    let result_value = serde_json::to_value(&ctx.result.content).unwrap_or_default();
+    let event = tool_result_hook_event(ctx);
     // First fire the void hook (notification)
     registry
         .hook_runner()
-        .run_after_tool_call(&ctx.tool_call.name, &result_value, ctx.is_error, ext_ctx)
+        .run_after_tool_call(&event, ext_ctx)
         .await;
-    // Then run the modifying hook to allow extensions to merge content/details/isError
-    // Convert ContentBlock → Value for the hook (pi-extension-api can't depend on pi-agent-core)
-    let content_json: Vec<serde_json::Value> = ctx
-        .result
-        .content
-        .iter()
-        .map(|c| serde_json::to_value(c).unwrap_or_default())
-        .collect();
-    let details = Some(ctx.result.details.clone());
+    // Then run the modifying hook: extensions may replace content, details,
+    // isError, and the tool's own usage (TS `ToolResultEventResult`).
     let result = registry
         .hook_runner()
-        .run_on_tool_result(
-            &ctx.tool_call.name,
-            content_json,
-            details,
-            ctx.is_error,
-            ext_ctx,
-        )
+        .run_on_tool_result(event.clone(), ext_ctx)
         .await;
     match result {
-        HookResult::Continue((content_json, details, is_error)) => {
-            // Convert Value → ContentBlock for AfterToolCallResult
-            let original_content_json: Vec<serde_json::Value> = ctx
-                .result
-                .content
-                .iter()
-                .map(|c| serde_json::to_value(c).unwrap_or_default())
-                .collect();
-            let original_details = Some(ctx.result.details.clone());
-            // Check if anything was actually modified
-            if content_json != original_content_json
-                || details != original_details
-                || is_error != ctx.is_error
-            {
-                let content =
-                    crate::core::tools::tool_definition_wrapper::content_blocks_from_values(
-                        content_json,
-                    );
-                Some(AfterToolCallResult {
-                    content: Some(content),
-                    details,
-                    is_error: Some(is_error),
-                    terminate: None,
-                    usage: None,
-                    structured_content: None,
-                })
-            } else {
-                None
+        HookResult::Continue(patched) => {
+            if patched == event {
+                return None;
             }
+            let content = crate::core::tools::tool_definition_wrapper::content_blocks_from_values(
+                patched.content,
+            );
+            let usage = patched.usage.and_then(|u| serde_json::from_value(u).ok());
+            Some(AfterToolCallResult {
+                content: Some(content),
+                details: patched.details,
+                is_error: Some(patched.is_error),
+                terminate: None,
+                usage,
+                structured_content: None,
+            })
         }
         HookResult::Cancel(_) => None,
     }

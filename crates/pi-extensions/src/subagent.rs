@@ -148,16 +148,25 @@ impl UsageStats {
     }
 }
 
+/// TS `formatTokens` (subagent example): `<1000` raw, `<10k` one decimal,
+/// `<1M` **rounded** `k` (`Math.round(count / 1000)` — not truncation), else
+/// one decimal `M`.
 fn format_tokens(count: u64) -> String {
     if count < 1000 {
         count.to_string()
     } else if count < 10_000 {
-        format!("{:.1}k", count as f64 / 1000.0)
+        format!("{}k", to_fixed_1(count as f64 / 1000.0))
     } else if count < 1_000_000 {
-        format!("{}k", count / 1000)
+        format!("{}k", (count as f64 / 1000.0).round() as u64)
     } else {
-        format!("{:.1}M", count as f64 / 1_000_000.0)
+        format!("{}M", to_fixed_1(count as f64 / 1_000_000.0))
     }
+}
+
+/// JS `toFixed(1)`: an exact tie rounds away from zero (`f64::round`), unlike
+/// Rust's `{:.1}` formatting.
+fn to_fixed_1(value: f64) -> String {
+    format!("{:.1}", (value * 10.0).round() / 10.0)
 }
 
 /// 一个子 agent 的运行结果（TS `SingleResult`）。

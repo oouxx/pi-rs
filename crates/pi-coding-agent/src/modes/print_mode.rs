@@ -88,11 +88,17 @@ pub async fn run_print_mode(options: PrintModeOptions<'_>) -> i32 {
         })
     };
 
-    let session = session_for_signal
+    let mut session = session_for_signal
         .lock()
         .await
         .take()
         .unwrap_or_else(|| panic!("session already disposed by signal handler"));
+    // TS sets `ctx.mode` to `"json"` / `"print"` before running (print-mode.ts).
+    session.set_extension_mode(if options.mode == "json" {
+        pi_extension_api::extension_mode::JSON
+    } else {
+        pi_extension_api::extension_mode::PRINT
+    });
     let images = options.images.unwrap_or(&[]);
 
     let result = match options.mode {

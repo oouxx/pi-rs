@@ -182,6 +182,10 @@ fn print_help() {
     println!("Options:");
     println!("  --check, -c   Only report whether an update is available");
     println!("  --force, -f   Update even if the installed version matches the latest");
+    println!(
+        "  --models      Refresh model catalogs (same as `{} refresh`)",
+        config::APP_NAME
+    );
     println!("  --help, -h    Show this help");
 }
 
@@ -203,6 +207,9 @@ fn parse_update_options(args: &[String]) -> Result<UpdateOptions, String> {
             "--check" | "-c" => o.check_only = true,
             "--force" | "-f" => o.force = true,
             "--help" | "-h" => o.help = true,
+            // TS `pi update --self` / `pi update self|pi` explicitly target the
+            // binary; that is already the default here.
+            "--self" | "self" | "pi" => {}
             s if s.starts_with('-') => {
                 return Err(format!("unknown option: {s}"));
             }
@@ -376,6 +383,14 @@ mod tests {
         // short aliases
         let o = parse_update_options(&["-c".into(), "-f".into()]).expect("short flags");
         assert!(o.check_only && o.force);
+    }
+
+    #[test]
+    fn parse_accepts_self_aliases() {
+        for arg in ["--self", "self", "pi"] {
+            let o = parse_update_options(&[arg.into()]).expect("self target is the default");
+            assert_eq!(o, UpdateOptions::default());
+        }
     }
 
     #[test]

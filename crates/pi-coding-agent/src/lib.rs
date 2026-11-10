@@ -10,6 +10,10 @@ pub mod utils;
 /// without listing pi-agent-core or pi-ai in their own Cargo.toml.
 pub use pi_agent_core;
 
+/// Re-export pi_tui so downstream crates (pi-cli) can reuse the ported
+/// fuzzy/filter helpers without duplicating them.
+pub use pi_tui;
+
 /// Message and tool execution lifecycle event types (match TS package-root
 /// exports of `MessageStartEvent`/`MessageUpdateEvent`/`MessageEndEvent`/
 /// `ToolExecutionStartEvent`/`ToolExecutionUpdateEvent`/`ToolExecutionEndEvent`,

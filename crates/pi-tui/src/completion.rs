@@ -11,23 +11,49 @@ use crate::components::CompletionItem;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
 
-/// Whether a character separates prose from a completion token. CJK letters
-/// stay inside words and paths; only CJK punctuation breaks a token, so typing
-/// `查看，@REA` still triggers a completion (TS `autocompleteSeparatorRegex`).
-#[must_use]
+/// Whether a character separates prose from a completion token.
+///
+/// Mirrors TS `autocompleteSeparatorRegex` exactly: `\s`, CJK-script
+/// punctuation (Han/Hiragana/Katakana/Hangul/Bopomofo `Script_Extensions`
+/// punctuation), plus the explicitly listed CJK marks. CJK **letters** and
+/// fullwidth alphanumerics stay inside words and paths, so typing `查看，@REA`
+/// triggers a completion while `Ａ` (U+FF21) does not break the token.
 pub fn is_separator(c: char) -> bool {
-    if c.is_whitespace() {
+    if c.is_whitespace() || c == '\u{FEFF}' {
         return true;
     }
-    // CJK Symbols and Punctuation, and the fullwidth forms (，：（ etc.).
-    if ('\u{3000}'..='\u{303F}').contains(&c) || ('\u{FF01}'..='\u{FF65}').contains(&c) {
-        return true;
-    }
-    // The punctuation the original lists explicitly that lives outside those
-    // blocks.
     matches!(
         c,
-        '\u{2026}' | '\u{2014}' | '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}'
+        '\u{B7}'
+            | '\u{2014}'
+            | '\u{2018}'
+            | '\u{2019}'
+            | '\u{201C}'
+            | '\u{201D}'
+            | '\u{2026}'
+            | '\u{3001}'..='\u{3003}'
+            | '\u{3008}'..='\u{3011}'
+            | '\u{3014}'..='\u{301F}'
+            | '\u{3030}'
+            | '\u{303D}'
+            | '\u{30A0}'
+            | '\u{30FB}'
+            | '\u{FE45}'
+            | '\u{FE46}'
+            | '\u{FF01}'
+            | '\u{FF08}'
+            | '\u{FF09}'
+            | '\u{FF0C}'
+            | '\u{FF0E}'
+            | '\u{FF1A}'
+            | '\u{FF1B}'
+            | '\u{FF1F}'
+            | '\u{FF3B}'
+            | '\u{FF3D}'
+            | '\u{FF5B}'
+            | '\u{FF5D}'
+            | '\u{FF61}'..='\u{FF65}'
+            | '\u{16FE2}'
     )
 }
 
@@ -303,6 +329,16 @@ mod cjk_separator_tests {
         assert!(is_separator('（'));
         assert!(is_separator('…'));
         assert!(is_separator(' '));
+        // Fullwidth alphanumerics are letters, not punctuation (TS
+        // `autocompleteSeparatorRegex` only matches CJK punctuation).
+        assert!(!is_separator('Ａ'));
+        assert!(!is_separator('１'));
+        assert!(!is_separator('〆'));
+        assert!(!is_separator('々'));
+        // Halfwidth CJK punctuation does separate.
+        assert!(is_separator('｡'));
+        assert!(is_separator('･'));
+        assert!(is_separator('、'));
     }
 
     /// A path containing a separator is quoted so the inserted text stays one

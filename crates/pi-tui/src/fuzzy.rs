@@ -38,7 +38,11 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
             break;
         }
         if c == q[query_index] {
-            let is_word_boundary = i == 0 || matches!(t[i - 1], ' ' | '-' | '_' | '.' | '/' | ':');
+            // TS `isWordBoundary = i === 0 || /[\s\-_./:]/.test(textLower[i-1])`
+            // — `\s` covers tab/newline, not just a space.
+            let is_word_boundary = i == 0
+                || t[i - 1].is_whitespace()
+                || matches!(t[i - 1], '-' | '_' | '.' | '/' | ':');
             // Reward consecutive matches.
             // All terms are scaled by 10 so the TS fractional positional
             // penalty (`i * 0.1`) keeps its exact ordering without changing
@@ -79,6 +83,27 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
     }
 }
 
+/// TS `/^(?<letters>[a-z]+)(?<digits>[0-9]+)$/` and the mirrored
+/// `^(?<digits>[0-9]+)(?<letters>[a-z]+)$`: one contiguous run of letters and
+/// one contiguous run of digits, in either order. Mixed runs (`a1b2`) are not
+/// swap-eligible. Returns the swapped query (the two runs exchanged).
+fn split_alnum_swap(q: &str) -> Option<String> {
+    let bytes = q.as_bytes();
+    let first_is_letter = bytes.first()?.is_ascii_alphabetic();
+    let boundary = bytes
+        .iter()
+        .position(|b| b.is_ascii_alphabetic() != first_is_letter)?;
+    let (first, second) = q.split_at(boundary);
+    if second.is_empty()
+        || !second
+            .bytes()
+            .all(|b| b.is_ascii_alphabetic() != first_is_letter)
+    {
+        return None;
+    }
+    Some(format!("{second}{first}"))
+}
+
 /// Port of `fuzzyMatch` (including the alphanumeric-swap fallback for
 /// queries like `gpt4` ↔ `4gpt`-style pairs).
 pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
@@ -87,16 +112,7 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
         return primary;
     }
     let q = query.to_lowercase();
-    let swapped: Option<String> = {
-        let (letters, digits): (String, String) = q.chars().partition(|c| c.is_ascii_alphabetic());
-        if letters.is_empty() || digits.is_empty() {
-            None
-        } else if q.len() == letters.len() + digits.len() {
-            Some(format!("{digits}{letters}"))
-        } else {
-            None
-        }
-    };
+    let swapped: Option<String> = split_alnum_swap(&q);
     let Some(swapped) = swapped else {
         return primary;
     };
@@ -188,6 +204,27 @@ mod tests {
     fn alphanumeric_swap_fallback() {
         let m = fuzzy_match("gpt4", "4gpt");
         assert!(m.matches, "gpt4 ↔ 4gpt swap");
+    }
+
+    /// TS splits the swap with `^(?<letters>[a-z]+)(?<digits>[0-9]+)$` (and the
+    /// mirrored form), so interleaved runs are not swap-eligible.
+    #[test]
+    fn alphanumeric_swap_requires_contiguous_runs() {
+        assert!(split_alnum_swap("gpt4").as_deref() == Some("4gpt"));
+        assert!(split_alnum_swap("4gpt").as_deref() == Some("gpt4"));
+        assert_eq!(split_alnum_swap("a1b2"), None);
+        assert_eq!(split_alnum_swap("gpt"), None);
+        assert_eq!(split_alnum_swap("42"), None);
+        assert_eq!(split_alnum_swap(""), None);
+        assert!(!fuzzy_match("a1b2", "2b1a").matches);
+    }
+
+    /// TS `isWordBoundary` uses `/[\s\-_./:]/`, so tab/newline count too.
+    #[test]
+    fn word_boundary_includes_all_whitespace() {
+        let tab = fuzzy_match("ab", "x\tab");
+        let space = fuzzy_match("ab", "x ab");
+        assert_eq!(tab.score, space.score, "tab and space are both boundaries");
     }
 
     #[test]

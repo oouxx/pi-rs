@@ -820,6 +820,11 @@ fn usage_format_matches_ts_shape() {
     );
     assert_eq!(format_tokens(999), "999");
     assert_eq!(format_tokens(1_500_000), "1.5M");
+    // TS `Math.round(count / 1000)`: 125_600 → 126k (truncation gave 125k).
+    assert_eq!(format_tokens(125_600), "126k");
+    assert_eq!(format_tokens(999_500), "1000k");
+    // TS `toFixed(1)` ties round away from zero; Rust `{:.1}` would give 1.2.
+    assert_eq!(format_tokens(1250), "1.3k");
     assert_eq!(UsageStats::default().format(None), "");
 }
 

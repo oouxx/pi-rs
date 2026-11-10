@@ -5566,8 +5566,8 @@ pub async fn run(
                     InputEvent::Mouse(mouse) => Msg::Mouse(mouse),
                     InputEvent::FocusLost => Msg::FocusLost,
                     InputEvent::Paste(text) => Msg::Paste(text),
-                    InputEvent::ScrollUp => Msg::ScrollUp(3),
-                    InputEvent::ScrollDown => Msg::ScrollDown(3),
+                    InputEvent::ScrollUp(lines) => Msg::ScrollUp(lines),
+                    InputEvent::ScrollDown(lines) => Msg::ScrollDown(lines),
                     InputEvent::Resize(w, h) => Msg::Resize(w, h),
                 };
                 let cmds = update(&mut model, msg);

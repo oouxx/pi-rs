@@ -30,15 +30,20 @@ impl IgnoreMatcher {
     }
 
     fn ignores(&self, path: &str) -> bool {
-        if self.patterns.is_empty() {
-            return false;
-        }
+        // Last matching pattern wins, so `!pattern` un-ignores a path
+        // (gitignore semantics; v0.87.1 uses the `ignore` crate).
+        let mut ignored = false;
         for pattern in &self.patterns {
-            if self.match_pattern(path, pattern) {
-                return true;
+            let trimmed = pattern.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let negated = trimmed.starts_with('!');
+            if self.match_pattern(path, trimmed) {
+                ignored = !negated;
             }
         }
-        false
+        ignored
     }
 
     fn match_pattern(&self, path: &str, pattern: &str) -> bool {
@@ -83,7 +88,34 @@ pub async fn load_skills_from_directories(
         diagnostics.append(&mut d);
     }
 
-    (skills, diagnostics)
+    // v0.87.1 `loadSkills` dedupes by real path and reports name collisions
+    // instead of silently loading the same skill twice.
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut deduped: Vec<Skill> = Vec::new();
+    for skill in skills {
+        let canonical = env
+            .canonical_path(&skill.file_path)
+            .await
+            .unwrap_or_else(|_| skill.file_path.clone());
+        if !seen_paths.insert(canonical) {
+            continue;
+        }
+        if let Some(existing) = seen_names.get(&skill.name) {
+            diagnostics.push(SkillDiagnostic {
+                diagnostic_type: "warning".to_string(),
+                code: "name_collision".to_string(),
+                message: format!("Skill name '{}' collides with {}", skill.name, existing),
+                path: skill.file_path.clone(),
+            });
+        } else {
+            seen_names.insert(skill.name.clone(), skill.file_path.clone());
+        }
+        deduped.push(skill);
+    }
+
+    (deduped, diagnostics)
 }
 
 async fn load_skills_from_directory(
@@ -699,5 +731,18 @@ fn basename(path: &str) -> String {
     match normalized.rfind('/') {
         Some(i) => normalized[i + 1..].to_string(),
         None => normalized.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negated_ignore_pattern_unignores() {
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_patterns(&["*.md".to_string(), "!keep.md".to_string()]);
+        assert!(matcher.ignores("drop.md"));
+        assert!(!matcher.ignores("keep.md"));
     }
 }

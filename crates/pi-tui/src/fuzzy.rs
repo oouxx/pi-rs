@@ -40,22 +40,25 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
         if c == q[query_index] {
             let is_word_boundary = i == 0 || matches!(t[i - 1], ' ' | '-' | '_' | '.' | '/' | ':');
             // Reward consecutive matches.
+            // All terms are scaled by 10 so the TS fractional positional
+            // penalty (`i * 0.1`) keeps its exact ordering without changing
+            // the public integer score type.
             if i > 0 && last_match_index == Some(i - 1) {
                 consecutive_matches += 1;
-                score -= consecutive_matches * 5;
+                score -= consecutive_matches * 50;
             } else {
                 consecutive_matches = 0;
                 // Penalize gaps.
                 if let Some(prev) = last_match_index {
-                    score += (i - prev - 1) as i64 * 2;
+                    score += (i - prev - 1) as i64 * 20;
                 }
             }
             // Reward word-boundary matches.
             if is_word_boundary {
-                score -= 10;
+                score -= 100;
             }
-            // Slight penalty for later matches.
-            score += i as i64 / 10;
+            // Slight penalty for later matches (`i * 0.1` in TS).
+            score += i as i64;
             last_match_index = Some(i);
             query_index += 1;
         }
@@ -68,7 +71,7 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
         };
     }
     if query_lower == text_lower {
-        score -= 100;
+        score -= 1000;
     }
     FuzzyMatch {
         matches: true,
@@ -103,7 +106,7 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
     }
     FuzzyMatch {
         matches: true,
-        score: swapped_match.score + 5,
+        score: swapped_match.score + 50,
     }
 }
 

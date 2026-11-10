@@ -68,10 +68,13 @@ impl JsonlSessionStorage {
         let mut labels_by_id = HashMap::new();
         let mut leaf_id = None;
 
-        for (i, line) in lines.iter().enumerate().skip(1) {
-            let entry: SessionTreeEntry = serde_json::from_str(line).map_err(|e| {
-                SessionError::InvalidSession(format!("Invalid entry at line {}: {}", i + 1, e))
-            })?;
+        for line in lines.iter().skip(1) {
+            // v0.87.1 `parseSessionEntries` skips malformed lines instead of
+            // making the whole session unloadable.
+            let entry: SessionTreeEntry = match serde_json::from_str(line) {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
 
             let id = entry.id().to_string();
             if let SessionTreeEntry::Leaf { target_id, .. } = &entry {

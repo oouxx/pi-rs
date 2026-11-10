@@ -1619,6 +1619,11 @@ async fn stream_anthropic_inner(
         partial: output.clone(),
     });
 
+    // The body borrows `output`; a stream error is caught after the block so
+    // the partial content/usage already accumulated is preserved in the
+    // emitted `error` event (v0.87.1 catch reuses `output`).
+    use futures::StreamExt;
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
     // Track content blocks with their indices
     #[derive(Debug, Clone)]
     struct BlockInfo {
@@ -1975,11 +1980,44 @@ async fn stream_anthropic_inner(
         }
     }
 
-    let _ = tx.send(AssistantMessageEvent::Done {
-        reason: output.stop_reason.clone(),
-        message: output,
-    });
+    // v0.87.1 throws for `error`/`pending`; the catch emits an `error`
+    // event. Only a normal terminal stop produces `done`.
+    if matches!(
+        output.stop_reason,
+        StopReason::Error | StopReason::Pending
+    ) {
+        output.stop_reason = StopReason::Error;
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: output.clone(),
+        });
+    } else {
+        let _ = tx.send(AssistantMessageEvent::Done {
+            reason: output.stop_reason.clone(),
+            message: output.clone(),
+        });
+    }
 
+    Ok(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        let aborted = options
+            .and_then(|o| o.signal.as_ref())
+            .map(|rx| *rx.borrow())
+            .unwrap_or(false);
+        output.stop_reason = if aborted {
+            StopReason::Aborted
+        } else {
+            StopReason::Error
+        };
+        output.error_message = Some(error.to_string());
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: output.stop_reason.clone(),
+            error: output,
+        });
+    }
     Ok(())
 }
 

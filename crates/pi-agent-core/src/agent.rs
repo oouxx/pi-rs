@@ -205,6 +205,9 @@ impl Default for AgentOptions {
 
 struct ActiveRun {
     cancel: tokio_util::sync::CancellationToken,
+    /// Abort signal handed to event listeners (v0.87.1 `processEvents`
+    /// passes the active run's `AbortController.signal`).
+    signal: Option<watch::Receiver<bool>>,
 }
 
 /// Registered agent event listeners.
@@ -975,6 +978,7 @@ impl Agent {
 
         let active_run = ActiveRun {
             cancel: cancel_clone,
+            signal: None,
         };
         *self.active_run.lock().await = Some(active_run);
 
@@ -991,6 +995,10 @@ impl Agent {
         let (config, signal) = self
             .create_loop_config(cancel_rx, skip_initial_steering_poll)
             .await;
+        // Expose the run's abort signal to event listeners.
+        if let Some(run) = self.active_run.lock().await.as_mut() {
+            run.signal = signal.clone();
+        }
 
         let loop_result = crate::agent_loop::run_agent_loop(
             prompts,
@@ -1032,6 +1040,7 @@ impl Agent {
 
         let active_run = ActiveRun {
             cancel: cancel_clone,
+            signal: None,
         };
         *self.active_run.lock().await = Some(active_run);
 
@@ -1041,11 +1050,14 @@ impl Agent {
             messages: state.messages.clone(),
             tools: Some(state.tools.clone()),
         };
-        let _model = state.model.clone();
+        let model = state.model.clone();
         drop(state);
 
         let emit = self.create_event_sink();
         let (config, signal) = self.create_loop_config(cancel_rx, false).await;
+        if let Some(run) = self.active_run.lock().await.as_mut() {
+            run.signal = signal.clone();
+        }
 
         let result = crate::agent_loop::run_agent_loop_continue(
             context,
@@ -1056,10 +1068,21 @@ impl Agent {
         )
         .await;
 
+        let was_aborted = signal.as_ref().map(|rx| *rx.borrow()).unwrap_or(false);
         self.active_run.lock().await.take();
         cancel_bridge.abort();
 
-        result
+        match result {
+            Ok(messages) => Ok(messages),
+            Err(error) => {
+                // Match the non-continue lifecycle: synthesize the failure
+                // message_start/end/turn_end/agent_end events instead of
+                // returning a bare error with no AgentEnd.
+                self.handle_run_failure(error, was_aborted, &model, &emit)
+                    .await;
+                Ok(vec![])
+            }
+        }
     }
 
     /// Handle a run failure by synthesizing a failure message and emitting lifecycle events.
@@ -1111,11 +1134,13 @@ impl Agent {
         let listeners = self.listeners.clone();
         let state = self.state.clone();
         let idle_notify = self.idle_notify.clone();
+        let active_run = self.active_run.clone();
 
         Arc::new(move |event: AgentEvent| {
             let listeners = listeners.clone();
             let state = state.clone();
             let idle_notify = idle_notify.clone();
+            let active_run = active_run.clone();
             Box::pin(async move {
                 // Reduce internal state (matches TS processEvents)
                 {
@@ -1150,22 +1175,33 @@ impl Agent {
                             s.error_message = Some(err.clone());
                         }
                         AgentEvent::AgentEnd { .. } => {
-                            s.is_streaming = false;
+                            // `is_streaming` stays true until the awaited
+                            // listeners settle (v0.87.1 `finishRun()` runs
+                            // after the `agent_end` listener loop).
                             s.streaming_message = None;
                         }
                         _ => {}
                     }
                 }
 
-                // Notify idle waiters on AgentEnd (after state update, before listeners)
-                if matches!(&event, AgentEvent::AgentEnd { .. }) {
-                    idle_notify.notify_waiters();
-                }
-
-                // Await all listeners (matches TS listener loop)
+                // Await all listeners (matches TS listener loop), passing the
+                // active run's abort signal (v0.87.1 `processEvents`).
+                let signal = active_run
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(|run| run.signal.clone());
                 let listeners_guard = listeners.read().await;
                 for listener in listeners_guard.iter() {
-                    listener(event.clone(), None).await;
+                    listener(event.clone(), signal.clone()).await;
+                }
+                drop(listeners_guard);
+
+                // Only after every `agent_end` listener settled does the run
+                // become idle (v0.87.1 `finishRun()`).
+                if matches!(&event, AgentEvent::AgentEnd { .. }) {
+                    state.write().await.is_streaming = false;
+                    idle_notify.notify_waiters();
                 }
             })
         })
@@ -2545,6 +2581,7 @@ mod tests {
                                 details: serde_json::json!({}),
                                 usage: None,
                                 terminate: None,
+                                structured_content: None,
                             })
                         })
                     },
@@ -2609,6 +2646,7 @@ mod tests {
                                 details: serde_json::json!({"status": "running"}),
                                 usage: None,
                                 terminate: None,
+                                structured_content: None,
                             });
                         }
                         // Return immediately
@@ -2617,6 +2655,7 @@ mod tests {
                             details: serde_json::json!({"status": "done"}),
                             usage: None,
                             terminate: Some(true),
+                            structured_content: None,
                         })
                     })
                 },
@@ -2690,6 +2729,7 @@ mod tests {
                     details: serde_json::json!({"status": "late"}),
                     usage: None,
                     terminate: None,
+                    structured_content: None,
                 });
             }
         }
@@ -2758,6 +2798,7 @@ mod tests {
                             details: serde_json::json!({"status": "done"}),
                             usage: None,
                             terminate: Some(true),
+                            structured_content: None,
                         })
                     })
                 },
@@ -2795,6 +2836,7 @@ mod tests {
                             details: serde_json::json!({"status": "done"}),
                             usage: None,
                             terminate: Some(true),
+                            structured_content: None,
                         })
                     })
                 },
@@ -2896,6 +2938,7 @@ mod tests {
                     details: serde_json::json!({"status": "late"}),
                     usage: None,
                     terminate: None,
+                    structured_content: None,
                 });
             }
         }

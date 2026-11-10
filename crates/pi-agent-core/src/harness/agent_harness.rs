@@ -968,6 +968,12 @@ where
                                                 terminate: v
                                                     .get("terminate")
                                                     .and_then(|b| b.as_bool()),
+                                                usage: v.get("usage").and_then(|u| {
+                                                    serde_json::from_value(u.clone()).ok()
+                                                }),
+                                                structured_content: v
+                                                    .get("structuredContent")
+                                                    .cloned(),
                                             });
                                         }
                                     }
@@ -1576,7 +1582,7 @@ where
                 }
             };
 
-            if let Some(_api_key) = api_key {
+            if let Some(api_key) = api_key {
                 let branch_entries = self
                     .session
                     .read()
@@ -1587,6 +1593,10 @@ where
 
                 let branch_summary_options = GenerateBranchSummaryOptions {
                     model: model.clone(),
+                    api_key: Some(api_key.clone()),
+                    headers: None,
+                    env: None,
+                    signal: None,
                     reserve_tokens: None,
                     custom_instructions: opts.custom_instructions.clone(),
                     replace_instructions: Some(opts.replace_instructions),

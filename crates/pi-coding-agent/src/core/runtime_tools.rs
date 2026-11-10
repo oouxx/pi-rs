@@ -193,6 +193,7 @@ impl RuntimeToolManager {
                             details: json!({"loaded": []}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         });
                     }
                     agent.add_tools(additions).await;
@@ -212,6 +213,7 @@ impl RuntimeToolManager {
                         details: json!({"loaded": names}),
                         usage: None,
                         terminate: None,
+                        structured_content: None,
                     })
                 });
                 future

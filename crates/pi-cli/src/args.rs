@@ -67,6 +67,10 @@ pub struct CliArgs {
     pub prompt_templates: Vec<String>,
     /// `--themes <path>`: additional theme paths (repeatable).
     pub themes: Vec<String>,
+    /// `--use-theme <name>`: select and persist a theme.
+    pub use_theme: Option<String>,
+    /// `--tui-mode <regular|fullscreen>`.
+    pub tui_mode: Option<String>,
     pub no_prompt_templates: bool,
     pub no_themes: bool,
     pub no_context_files: bool,
@@ -180,11 +184,36 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         let arg = &args[i];
 
         match arg.as_str() {
+            // `--` ends option parsing: everything after it is a message or an
+            // `@file` argument, even if it starts with `-` (v0.87.1).
+            "--" => {
+                for positional in args.iter().skip(i + 1) {
+                    if let Some(file) = positional.strip_prefix('@') {
+                        result.file_args.push(file.to_string());
+                    } else {
+                        result.messages.push(positional.clone());
+                    }
+                }
+                break;
+            }
             "--help" | "-h" => result.help = true,
             "--version" | "-v" => result.version = true,
             "--interactive" | "-i" => result.mode = OutputMode::Interactive,
             "--acp" => result.mode = OutputMode::Acp,
-            "--print" | "-p" => result.print = true,
+            "--print" | "-p" => {
+                result.print = true;
+                // `-p "message"` consumes the next token unless it is an
+                // `@file` or another flag (v0.87.1).
+                if i + 1 < args.len() {
+                    let next = &args[i + 1];
+                    if !next.starts_with('@')
+                        && (!next.starts_with('-') || next.starts_with("---"))
+                    {
+                        result.messages.push(next.clone());
+                        i += 1;
+                    }
+                }
+            }
             "--verbose" => result.verbose = true,
             "--offline" => result.offline = true,
             "--list-models" => {
@@ -205,37 +234,67 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--models" => {
                 i += 1;
                 if i < args.len() {
-                    result.models.push(args[i].clone());
+                    // Comma-separated list, trimmed, empty entries dropped
+                    // (v0.87.1).
+                    result.models.extend(
+                        args[i]
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|pattern| !pattern.is_empty())
+                            .map(str::to_string),
+                    );
                 }
             }
-            "--skills" => {
+            "--skills" | "--skill" => {
                 i += 1;
                 if i < args.len() {
                     result.skills.push(args[i].clone());
                 }
             }
-            "--prompt-templates" => {
+            "--prompt-templates" | "--prompt-template" => {
                 i += 1;
                 if i < args.len() {
                     result.prompt_templates.push(args[i].clone());
                 }
             }
-            "--themes" => {
+            "--themes" | "--theme" => {
                 i += 1;
                 if i < args.len() {
                     result.themes.push(args[i].clone());
                 }
             }
-            "--no-prompt-templates" => result.no_prompt_templates = true,
+            "--use-theme" => {
+                i += 1;
+                if i < args.len() && !args[i].starts_with('-') {
+                    result.use_theme = Some(args[i].clone());
+                } else {
+                    result
+                        .diagnostics
+                        .push("--use-theme requires a theme name".to_string());
+                }
+            }
+            "--tui-mode" => {
+                i += 1;
+                if i < args.len() && (args[i] == "regular" || args[i] == "fullscreen") {
+                    result.tui_mode = Some(args[i].clone());
+                } else {
+                    result
+                        .diagnostics
+                        .push("--tui-mode requires regular or fullscreen".to_string());
+                }
+            }
+            "--approve" | "-a" => result.project_trust_override = Some(true),
+            "--no-approve" | "-na" => result.project_trust_override = Some(false),
+            "--no-prompt-templates" | "-np" => result.no_prompt_templates = true,
             "--no-themes" => result.no_themes = true,
-            "--no-context-files" => result.no_context_files = true,
-            "--continue" => result.continue_session = true,
-            "--resume" => result.resume_session = true,
+            "--no-context-files" | "-nc" => result.no_context_files = true,
+            "--continue" | "-c" => result.continue_session = true,
+            "--resume" | "-r" => result.resume_session = true,
             "--no-session" => result.no_session = true,
-            "--no-tools" => result.no_tools = true,
-            "--no-builtin-tools" => result.no_builtin_tools = true,
-            "--no-extensions" => result.no_extensions = true,
-            "--no-skills" => result.no_skills = true,
+            "--no-tools" | "-nt" => result.no_tools = true,
+            "--no-builtin-tools" | "-nbt" => result.no_builtin_tools = true,
+            "--no-extensions" | "-ne" => result.no_extensions = true,
+            "--no-skills" | "-ns" => result.no_skills = true,
 
             "--mode" => {
                 // A missing value, or one that is another flag, is reported and
@@ -288,7 +347,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            "--append-prompt" | "-A" => {
+            "--append-prompt" | "--append-system-prompt" | "-A" => {
                 i += 1;
                 if i < args.len() {
                     result.append_system_prompt.push(args[i].clone());
@@ -298,10 +357,10 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--thinking" => {
                 i += 1;
                 if i < args.len() {
-                    let level = args[i].to_lowercase();
-                    match level.as_str() {
-                        "off" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
-                            result.thinking = Some(level);
+                    // v0.87.1 is case-sensitive and includes "max".
+                    match args[i].as_str() {
+                        "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
+                            result.thinking = Some(args[i].clone());
                         }
                         _ => {
                             result
@@ -332,7 +391,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            "--name" => {
+            "--name" | "-n" => {
                 i += 1;
                 if i < args.len() {
                     result.name = Some(args[i].clone());
@@ -405,7 +464,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 }
             }
 
-            "--extension" => {
+            "--extension" | "-e" => {
                 i += 1;
                 if i < args.len() {
                     result.extensions.push(args[i].clone());
@@ -540,6 +599,72 @@ mod tests {
         let args = parse_args(&["-p".into(), "hello".into()]);
         assert!(args.print);
         assert_eq!(args.messages, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_parse_v0871_aliases_and_terminator() {
+        let args = parse_args(&[
+            "-c".into(),
+            "-r".into(),
+            "-nt".into(),
+            "-nbt".into(),
+            "-ne".into(),
+            "-ns".into(),
+            "-np".into(),
+            "-nc".into(),
+        ]);
+        assert!(args.continue_session);
+        assert!(args.resume_session);
+        assert!(args.no_tools);
+        assert!(args.no_builtin_tools);
+        assert!(args.no_extensions);
+        assert!(args.no_skills);
+        assert!(args.no_prompt_templates);
+        assert!(args.no_context_files);
+
+        let args = parse_args(&["--models".into(), "a, b,,c".into()]);
+        assert_eq!(args.models, vec!["a", "b", "c"]);
+
+        let args = parse_args(&["--thinking".into(), "max".into()]);
+        assert_eq!(args.thinking.as_deref(), Some("max"));
+
+        let args = parse_args(&["--append-system-prompt".into(), "x".into()]);
+        assert_eq!(args.append_system_prompt, vec!["x"]);
+
+        let args = parse_args(&[
+            "-n".into(),
+            "sess".into(),
+            "-e".into(),
+            "/ext".into(),
+            "-a".into(),
+        ]);
+        assert_eq!(args.name.as_deref(), Some("sess"));
+        assert_eq!(args.extensions, vec!["/ext"]);
+        assert_eq!(args.project_trust_override, Some(true));
+
+        let args = parse_args(&[
+            "-na".into(),
+            "--use-theme".into(),
+            "dark".into(),
+            "--tui-mode".into(),
+            "fullscreen".into(),
+        ]);
+        assert_eq!(args.project_trust_override, Some(false));
+        assert_eq!(args.use_theme.as_deref(), Some("dark"));
+        assert_eq!(args.tui_mode.as_deref(), Some("fullscreen"));
+    }
+
+    #[test]
+    fn test_double_dash_terminator_keeps_flag_like_messages() {
+        let args = parse_args(&[
+            "-p".into(),
+            "--".into(),
+            "- Summarize these points".into(),
+            "@file.txt".into(),
+        ]);
+        assert!(args.print);
+        assert_eq!(args.messages, vec!["- Summarize these points"]);
+        assert_eq!(args.file_args, vec!["file.txt"]);
     }
 
     #[test]

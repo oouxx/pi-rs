@@ -44,29 +44,21 @@ impl SelectList {
         if key.kind != crossterm::event::KeyEventKind::Press {
             return;
         }
+        if self.items.is_empty() {
+            return;
+        }
+        // v0.87.1 `SelectList.handleInput`: Up/Down wrap at the ends; it does
+        // not bind Home/End/j/k or page keys.
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 let i = self.state.selected().unwrap_or(0);
-                if i > 0 {
-                    self.state.select(Some(i - 1));
-                }
+                let next = if i == 0 { self.items.len() - 1 } else { i - 1 };
+                self.state.select(Some(next));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 let i = self.state.selected().unwrap_or(0);
-                if i + 1 < self.items.len() {
-                    self.state.select(Some(i + 1));
-                }
-            }
-            KeyCode::Home => self.state.select(Some(0)),
-            KeyCode::End => self.state.select(Some(self.items.len().saturating_sub(1))),
-            KeyCode::PageUp => {
-                let i = self.state.selected().unwrap_or(0);
-                self.state.select(Some(i.saturating_sub(5)));
-            }
-            KeyCode::PageDown => {
-                let i = self.state.selected().unwrap_or(0);
-                self.state
-                    .select(Some((i + 5).min(self.items.len().saturating_sub(1))));
+                let next = if i + 1 >= self.items.len() { 0 } else { i + 1 };
+                self.state.select(Some(next));
             }
             _ => {}
         }

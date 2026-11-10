@@ -263,6 +263,12 @@ impl AgentSessionRuntime {
     /// the session is disposed (abort controllers, agent subscription, bash
     /// cleanup), matching TS teardownCurrent().
     async fn teardown_current(&mut self, reason: &str, target_session_file: Option<&str>) {
+        // Abort the in-flight run before emitting session_shutdown, so an
+        // active turn/tool result cannot be lost or continue after teardown
+        // (v0.87.1 `teardownCurrent` calls `session.abort()`).
+        self.session.request_abort();
+        self.session.abort().await;
+
         // Emit session_shutdown to extensions (matching TS emitSessionShutdownEvent)
         if let Some(ref registry) = self.session.get_extension_registry() {
             registry

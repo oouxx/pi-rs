@@ -218,6 +218,54 @@ impl Input {
     /// Move left by one grapheme (vendored kernel: CJK/emoji-cluster safe).
     /// A valid paste marker is one grapheme (TS `moveCursor` uses the
     /// marker-aware `segment(text, "grapheme")`).
+    /// Move the cursor up one logical line, preserving the column
+    /// (v0.87.1 `tui.editor.cursorUp`).
+    pub fn move_up(&mut self) {
+        let text = self.buf.text();
+        let cursor = self.buf.cursor_byte();
+        let line_start = text[..cursor].rfind('\n').map_or(0, |index| index + 1);
+        if line_start == 0 {
+            return;
+        }
+        let column = text[line_start..cursor].chars().count();
+        let previous_start = text[..line_start - 1]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let previous_line = &text[previous_start..line_start - 1];
+        let target = previous_start
+            + previous_line
+                .char_indices()
+                .nth(column)
+                .map_or(previous_line.len(), |(index, _)| index);
+        let _ = self.buf.set_cursor_byte(target);
+    }
+
+    /// Move the cursor down one logical line, preserving the column
+    /// (v0.87.1 `tui.editor.cursorDown`).
+    pub fn move_down(&mut self) {
+        let text = self.buf.text();
+        let cursor = self.buf.cursor_byte();
+        let line_start = text[..cursor].rfind('\n').map_or(0, |index| index + 1);
+        let line_end = text[cursor..]
+            .find('\n')
+            .map_or(text.len(), |index| cursor + index);
+        if line_end >= text.len() {
+            return;
+        }
+        let column = text[line_start..cursor].chars().count();
+        let next_start = line_end + 1;
+        let next_end = text[next_start..]
+            .find('\n')
+            .map_or(text.len(), |index| next_start + index);
+        let next_line = &text[next_start..next_end];
+        let target = next_start
+            + next_line
+                .char_indices()
+                .nth(column)
+                .map_or(next_line.len(), |(index, _)| index);
+        let _ = self.buf.set_cursor_byte(target);
+    }
+
     pub fn move_left(&mut self) {
         let cursor = self.buf.cursor_byte();
         if let Some((_, marker_len)) =

@@ -25,6 +25,9 @@ pub struct SkillInfo {
     pub description: String,
     pub file_path: String,
     pub base_dir: String,
+    /// Skills marked `disable-model-invocation` are hidden from the prompt and
+    /// can only be invoked explicitly (TS `disableModelInvocation`).
+    pub disable_model_invocation: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -324,18 +327,43 @@ pub fn diff_system_prompt_sections(
     }
 }
 
+/// Format skills for the system prompt using the Agent Skills XML format
+/// (v0.87.1 `formatSkillsForPrompt`). Skills marked
+/// `disable_model_invocation` are hidden from the model.
 pub fn format_skills_for_prompt(skills: &[SkillInfo]) -> String {
-    let mut result = String::from("\n\n<skills>\n\n");
-    result.push_str("You have access to the following skills. Use them when relevant:\n\n");
-    for skill in skills {
-        result.push_str(&format!("### Skill: {}\n", skill.name));
-        if !skill.description.is_empty() {
-            result.push_str(&format!("{}\n", skill.description));
-        }
-        result.push('\n');
+    let visible: Vec<&SkillInfo> = skills
+        .iter()
+        .filter(|skill| !skill.disable_model_invocation)
+        .collect();
+    if visible.is_empty() {
+        return String::new();
     }
-    result.push_str("</skills>\n");
-    result
+
+    let mut lines = vec![
+        "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
+        "Use the read tool to load a skill's file when the task matches its description.".to_string(),
+        "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
+        String::new(),
+        "<available_skills>".to_string(),
+    ];
+    for skill in visible {
+        lines.push("  <skill>".to_string());
+        lines.push(format!(
+            "    <name>{}</name>",
+            crate::core::skills::escape_xml(&skill.name)
+        ));
+        lines.push(format!(
+            "    <description>{}</description>",
+            crate::core::skills::escape_xml(&skill.description)
+        ));
+        lines.push(format!(
+            "    <location>{}</location>",
+            crate::core::skills::escape_xml(&skill.file_path)
+        ));
+        lines.push("  </skill>".to_string());
+    }
+    lines.push("</available_skills>".to_string());
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -454,5 +482,31 @@ mod tests {
         let patch = diff_system_prompt_sections(&previous, &current).unwrap();
         assert_eq!(patch["cwd"].as_deref(), Some("<cwd>\n/b\n</cwd>"));
         assert_eq!(patch["skills"], None, "missing section removed");
+    }
+
+    #[test]
+    fn format_skills_for_prompt_uses_xml_and_hides_disabled() {
+        let skills = vec![
+            SkillInfo {
+                name: "a&b".to_string(),
+                description: "desc".to_string(),
+                file_path: "/tmp/a.md".to_string(),
+                base_dir: "/tmp".to_string(),
+                disable_model_invocation: false,
+            },
+            SkillInfo {
+                name: "hidden".to_string(),
+                description: "secret".to_string(),
+                file_path: "/tmp/h.md".to_string(),
+                base_dir: "/tmp".to_string(),
+                disable_model_invocation: true,
+            },
+        ];
+        let prompt = format_skills_for_prompt(&skills);
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("<name>a&amp;b</name>"));
+        assert!(prompt.contains("<location>/tmp/a.md</location>"));
+        assert!(!prompt.contains("hidden"));
+        assert!(!prompt.contains("secret"));
     }
 }

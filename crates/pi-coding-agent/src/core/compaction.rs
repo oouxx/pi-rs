@@ -660,23 +660,26 @@ fn extract_file_operations(
 }
 
 pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
-    let mut result = String::new();
-
+    // v0.87.1 `formatFileOperations` uses XML tags so the summarizer can
+    // parse the file lists unambiguously.
+    let mut sections: Vec<String> = Vec::new();
     if !read_files.is_empty() {
-        result.push_str("\n\n## Files Read\n");
-        for f in read_files {
-            result.push_str(&format!("- {}\n", f));
-        }
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
     }
-
     if !modified_files.is_empty() {
-        result.push_str("\n\n## Files Modified\n");
-        for f in modified_files {
-            result.push_str(&format!("- {}\n", f));
-        }
+        sections.push(format!(
+            "<modified-files>\n{}\n</modified-files>",
+            modified_files.join("\n")
+        ));
     }
-
-    result
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", sections.join("\n\n"))
+    }
 }
 
 pub fn build_summarization_prompt(
@@ -743,50 +746,94 @@ fn messages_to_entries(messages: Vec<AgentMessage>) -> Vec<SessionEntry> {
         .collect()
 }
 
+/// Serialize LLM messages for summarization (v0.87.1
+/// `serializeConversation`): labeled sections, tool-call arguments included,
+/// and tool results capped at 2000 UTF-16 units with a removed-character
+/// marker.
 fn serialize_conversation(messages: &[Message]) -> String {
-    let mut text = String::new();
+    let mut parts: Vec<String> = Vec::new();
     for msg in messages {
         match msg {
             Message::User { content, .. } => {
-                text.push_str("## User\n");
-                for block in content {
-                    if let ContentBlock::Text { text: t, .. } = block {
-                        text.push_str(t);
-                        text.push('\n');
-                    }
+                let text = pi_ai::utils::text::content_text(content, "");
+                if !text.is_empty() {
+                    parts.push(format!("[User]: {text}"));
                 }
             }
             // System messages are not part of the conversation summary.
             Message::System { .. } => {}
             Message::Assistant { content, .. } => {
-                text.push_str("## Assistant\n");
+                let mut thinking_parts: Vec<String> = Vec::new();
+                let mut tool_calls: Vec<String> = Vec::new();
                 for block in content {
                     match block {
-                        ContentBlock::Text { text: t, .. } => {
-                            text.push_str(t);
-                            text.push('\n');
+                        ContentBlock::Thinking { thinking, .. } => {
+                            thinking_parts.push(thinking.clone());
                         }
-                        ContentBlock::ToolCall { name, .. } => {
-                            text.push_str(&format!("[Tool Call: {}]\n", name));
+                        ContentBlock::ToolCall {
+                            name, arguments, ..
+                        } => {
+                            let args_str = arguments
+                                .as_object()
+                                .map(|obj| {
+                                    obj.iter()
+                                        .map(|(key, value)| {
+                                            format!(
+                                                "{key}={}",
+                                                serde_json::to_string(value).unwrap_or_default()
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                })
+                                .unwrap_or_default();
+                            tool_calls.push(format!("{name}({args_str})"));
                         }
                         _ => {}
                     }
                 }
+                if !thinking_parts.is_empty() {
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
+                }
+                if content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }))
+                {
+                    parts.push(format!(
+                        "[Assistant]: {}",
+                        pi_ai::utils::text::content_text(content, "")
+                    ));
+                }
+                if !tool_calls.is_empty() {
+                    parts.push(format!(
+                        "[Assistant tool calls]: {}",
+                        tool_calls.join("; ")
+                    ));
+                }
             }
-            Message::ToolResult {
-                tool_name, content, ..
-            } => {
-                text.push_str(&format!("## Tool Result ({})\n", tool_name));
-                for block in content {
-                    if let ContentBlock::Text { text: t, .. } = block {
-                        text.push_str(t);
-                        text.push('\n');
-                    }
+            Message::ToolResult { content, .. } => {
+                let text = pi_ai::utils::text::content_text(content, "");
+                if !text.is_empty() {
+                    const TOOL_RESULT_MAX_CHARS: usize = 2000;
+                    let total = pi_ai::utils::text::utf16_len(&text);
+                    let truncated = if total > TOOL_RESULT_MAX_CHARS {
+                        format!(
+                            "{}\n\n[... {} more characters truncated]",
+                            pi_ai::utils::text::truncate_utf16(&text, TOOL_RESULT_MAX_CHARS),
+                            total - TOOL_RESULT_MAX_CHARS
+                        )
+                    } else {
+                        text
+                    };
+                    parts.push(format!("[Tool result]: {truncated}"));
                 }
             }
         }
     }
-    text
+    parts.join("\n\n")
 }
 
 pub fn serialize_compaction_summary(summary: &CompactionResult) -> Result<String, String> {
@@ -1312,9 +1359,9 @@ mod tests {
             &["/path/a.rs".to_string()],
             &["/path/b.rs".to_string(), "/path/c.rs".to_string()],
         );
-        assert!(result.contains("Files Read"));
+        assert!(result.contains("<read-files>"));
         assert!(result.contains("/path/a.rs"));
-        assert!(result.contains("Files Modified"));
+        assert!(result.contains("<modified-files>"));
         assert!(result.contains("/path/b.rs"));
     }
 

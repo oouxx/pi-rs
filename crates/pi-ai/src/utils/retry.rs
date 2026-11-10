@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use regex::Regex;
 use tokio::sync::watch;
 
 use crate::types::{AssistantMessage, StopReason};
@@ -55,7 +56,7 @@ pub type RetryAttemptStartFn = Arc<dyn Fn() + Send + Sync>;
 /// Callback type for [`RetryCallbacks::on_retry_finished`].
 pub type RetryFinishedFn = Arc<dyn Fn(bool, u32, Option<String>) + Send + Sync>;
 
-/// Non-retryable patterns (quota/billing/limit errors) — match TS
+/// Non-retryable patterns (quota/billing/limit errors) — match v0.87.1
 /// `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN`.
 const NON_RETRYABLE_PATTERNS: &[&str] = &[
     "GoUsageLimitError",
@@ -68,41 +69,43 @@ const NON_RETRYABLE_PATTERNS: &[&str] = &[
     "billing",
 ];
 
-/// Retryable patterns (transient provider/transport errors) — match TS
-/// `RETRYABLE_PROVIDER_ERROR_PATTERN`.
+/// Retryable patterns (transient provider/transport errors) — match v0.87.1
+/// `RETRYABLE_PROVIDER_ERROR_PATTERN`. `.?` is a regex optional separator.
 const RETRYABLE_PATTERNS: &[&str] = &[
     "overloaded",
-    "rate limit",
+    "currently experiencing high demand",
+    "rate.?limit",
     "too many requests",
     "429",
     "500",
     "502",
     "503",
     "504",
+    "520",
     "524",
-    "service unavailable",
-    "server error",
-    "internal error",
-    "provider returned error",
-    "network error",
-    "connection error",
-    "connection refused",
-    "connection lost",
+    "service.?unavailable",
+    "server.?error",
+    "internal.?error",
+    "provider.?returned.?error",
+    "exceeded request buffer limit while retrying upstream",
+    "network.?error",
+    "connection.?error",
+    "connection.?refused",
+    "connection.?lost",
     "other side closed",
     "fetch failed",
-    "upstream connect",
+    "getaddrinfo",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "upstream.?connect",
     "reset before headers",
     "socket hang up",
     "socket connection was closed",
-    "timed out",
+    "timed? out",
     "timeout",
     "terminated",
-    "websocket closed",
-    "websocket error",
-    // DNS lookup failures (TS #6946)
-    "getaddrinfo",
-    "enotfound",
-    "eai_again",
+    "websocket.?closed",
+    "websocket.?error",
     "ended without",
     "stream ended before message_stop",
     "stream ended before a terminal response event",
@@ -114,6 +117,14 @@ const RETRYABLE_PATTERNS: &[&str] = &[
     "ResourceExhausted",
 ];
 
+static NON_RETRYABLE_PATTERN: std::sync::LazyLock<Option<Regex>> = std::sync::LazyLock::new(|| {
+    Regex::new(&format!("(?i){}", NON_RETRYABLE_PATTERNS.join("|"))).ok()
+});
+
+static RETRYABLE_PATTERN: std::sync::LazyLock<Option<Regex>> = std::sync::LazyLock::new(|| {
+    Regex::new(&format!("(?i){}", RETRYABLE_PATTERNS.join("|"))).ok()
+});
+
 /// Classifies whether a failed assistant message looks like a transient provider
 /// or transport error (match TS `isRetryableAssistantError`).
 pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
@@ -123,11 +134,15 @@ pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
     let Some(error_message) = message.error_message.as_deref() else {
         return false;
     };
-    let lower = error_message.to_lowercase();
-    if NON_RETRYABLE_PATTERNS.iter().any(|p| lower.contains(p)) {
+    if NON_RETRYABLE_PATTERN
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(error_message))
+    {
         return false;
     }
-    RETRYABLE_PATTERNS.iter().any(|p| lower.contains(p))
+    RETRYABLE_PATTERN
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(error_message))
 }
 
 /// Run a single assistant-producing call with bounded retry on transient errors

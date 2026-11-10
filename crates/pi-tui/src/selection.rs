@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// Word-selection joiners (TS `TERMINAL_WORD_SELECTION_JOINERS`): a terminal
 /// double-click keeps paths (`a/b`) and kebab-case (`a-b`) tokens whole.
+/// v0.87.1 has exactly these two.
 pub const JOINERS: [&str; 2] = ["/", "-"];
 
 /// Which coordinate space a selection point lives in.

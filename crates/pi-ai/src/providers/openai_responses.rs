@@ -1626,8 +1626,13 @@ where
                                 ..
                             } = &mut output.content[content_index]
                             {
-                                if !summary_text.is_empty() || !content_text.is_empty() {
-                                    *thinking = summary_text + &content_text;
+                                // v0.87.1: `summaryText || contentText ||
+                                // slot.block.thinking` — prefer the summary,
+                                // never concatenate both.
+                                if !summary_text.is_empty() {
+                                    *thinking = summary_text;
+                                } else if !content_text.is_empty() {
+                                    *thinking = content_text;
                                 }
                                 *thinking_signature = Some(item.to_string());
                             }
@@ -1745,7 +1750,7 @@ where
                             }) = output_slots.get_mut(&output_index)
                             {
                                 has_custom_input = true;
-                                if let ContentBlock::ToolCall { arguments, .. } =
+                                let delta = if let ContentBlock::ToolCall { arguments, .. } =
                                     &mut output.content[content_index]
                                 {
                                     let input = item
@@ -1755,8 +1760,20 @@ where
                                         .unwrap_or_else(|| {
                                             get_custom_tool_call_input(arguments, &ci.property)
                                         });
-                                    let _ =
-                                        append_custom_tool_call_input(ci, arguments, input, true);
+                                    append_custom_tool_call_input(ci, arguments, input, true)
+                                        .ok()
+                                        .flatten()
+                                } else {
+                                    None
+                                };
+                                // v0.87.1 emits the closing custom-tool delta
+                                // (`pushToolCallDelta`), it is not discarded.
+                                if let Some(delta) = delta.filter(|delta| !delta.is_empty()) {
+                                    let _ = tx.send(AssistantMessageEvent::ToolCallDelta {
+                                        content_index,
+                                        delta,
+                                        partial: output.clone(),
+                                    });
                                 }
                             }
                             if has_custom_input {
@@ -1978,12 +1995,42 @@ fn build_request_body(
     }
 
     if model.reasoning {
-        let reasoning = json!({ "effort": "medium", "summary": "auto" });
-        body.insert("reasoning".to_string(), reasoning);
-        body.insert(
-            "include".to_string(),
-            json!(["reasoning.encrypted_content"]),
-        );
+        match options.and_then(|o| o.reasoning_effort.as_deref()) {
+            Some(requested) => {
+                // Map through `thinkingLevelMap`, falling back to the
+                // requested level (v0.87.1 `?? options.reasoningEffort`).
+                let effort = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|map| map.get(requested).cloned().flatten())
+                    .unwrap_or_else(|| requested.to_string());
+                body.insert(
+                    "reasoning".to_string(),
+                    json!({ "effort": effort, "summary": "auto" }),
+                );
+                body.insert(
+                    "include".to_string(),
+                    json!(["reasoning.encrypted_content"]),
+                );
+            }
+            None => {
+                // No effort requested: explicitly disable reasoning unless the
+                // provider or the model's `off` mapping opts out.
+                let off_is_null = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|map| map.get("off"))
+                    .is_some_and(Option::is_none);
+                if model.provider != "github-copilot" && !off_is_null {
+                    let effort = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|map| map.get("off").cloned().flatten())
+                        .unwrap_or_else(|| "none".to_string());
+                    body.insert("reasoning".to_string(), json!({ "effort": effort }));
+                }
+            }
+        }
     }
 
     // Last so custom keys override the named request fields (TS
@@ -2205,6 +2252,9 @@ async fn stream_openai_responses_inner(
         partial: output.clone(),
     });
 
+    // Catch stream errors after the body so the partial content/usage is
+    // preserved in the emitted `error` event (v0.87.1 catch reuses `output`).
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
     let service_tier = options.and_then(|o| o.service_tier.as_deref());
     let compat = get_compat(model);
     let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
@@ -2225,11 +2275,43 @@ async fn stream_openai_responses_inner(
         output.stop_reason = StopReason::Stop;
     }
 
-    let _ = tx.send(AssistantMessageEvent::Done {
-        reason: output.stop_reason.clone(),
-        message: output,
-    });
+    // v0.87.1 throws for `error`/`pending`; the catch emits an `error` event.
+    if matches!(
+        output.stop_reason,
+        StopReason::Error | StopReason::Pending
+    ) {
+        output.stop_reason = StopReason::Error;
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: output.clone(),
+        });
+    } else {
+        let _ = tx.send(AssistantMessageEvent::Done {
+            reason: output.stop_reason.clone(),
+            message: output.clone(),
+        });
+    }
 
+    Ok(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        let aborted = options
+            .and_then(|o| o.signal.as_ref())
+            .map(|rx| *rx.borrow())
+            .unwrap_or(false);
+        output.stop_reason = if aborted {
+            StopReason::Aborted
+        } else {
+            StopReason::Error
+        };
+        output.error_message = Some(error.to_string());
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: output.stop_reason.clone(),
+            error: output,
+        });
+    }
     Ok(())
 }
 

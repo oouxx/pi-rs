@@ -64,9 +64,14 @@ pub fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{}B", bytes)
     } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
+        // JS `toFixed(1)` rounds ties away from zero; Rust's `{:.1}` rounds
+        // half to even (1280 / 1024 == 1.25 -> "1.3" vs "1.2").
+        let tenths = pi_ai::utils::text::round_one_decimal(bytes as f64 / 1024.0);
+        format!("{}.{}KB", tenths / 10, tenths % 10)
     } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+        let tenths =
+            pi_ai::utils::text::round_one_decimal(bytes as f64 / (1024.0 * 1024.0));
+        format!("{}.{}MB", tenths / 10, tenths % 10)
     }
 }
 
@@ -282,17 +287,15 @@ fn truncate_string_to_bytes_from_end(s: &str, max_bytes: usize) -> String {
 
 pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
     let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
-    // Use char_indices to safely find the byte boundary of the max-th character.
-    // This avoids panicking on multi-byte UTF-8 characters (e.g. CJK, emoji).
-    let byte_pos = line
-        .char_indices()
-        .nth(max)
-        .map(|(pos, _)| pos)
-        .unwrap_or(line.len());
-    if byte_pos >= line.len() {
+    // v0.87.1 `truncateLine` compares `line.length` and slices at `maxChars`
+    // UTF-16 code units (not Unicode scalar values). Rust cannot represent a
+    // lone surrogate, so an astral character straddling the boundary is
+    // dropped whole (v1.5.0 `sliceHead` behavior).
+    if pi_ai::utils::text::utf16_len(line) <= max {
         return (line.to_string(), false);
     }
-    (format!("{}... [truncated]", &line[..byte_pos]), true)
+    let head = pi_ai::utils::text::truncate_utf16(line, max);
+    (format!("{head}... [truncated]"), true)
 }
 
 #[cfg(test)]
@@ -402,6 +405,37 @@ fn test_truncate_line_one_over() {
     let (text, was_truncated) = truncate_line(&line, Some(500));
     assert!(was_truncated);
     assert!(text.ends_with("[truncated]"));
+}
+
+#[test]
+fn test_format_size_matches_js_to_fixed_tie_break() {
+    // 1280 / 1024 == 1.25 exactly; JS toFixed(1) picks "1.3".
+    assert_eq!(format_size(1280), "1.3KB");
+    assert_eq!(format_size(6400), "6.3KB");
+    assert_eq!(format_size(1_310_720), "1.3MB");
+    assert_eq!(format_size(1024 * 1024 - 1), "1024.0KB");
+}
+
+#[test]
+fn test_truncate_line_counts_utf16_code_units() {
+    // 300 scalar values == 600 UTF-16 code units.
+    let line = "😀".repeat(300);
+    let (text, was_truncated) = truncate_line(&line, Some(500));
+    assert!(was_truncated);
+    assert_eq!(text, format!("{}... [truncated]", "😀".repeat(250)));
+}
+
+#[test]
+fn test_truncate_line_never_splits_surrogate_pair() {
+    let (text, was_truncated) = truncate_line("a😀b", Some(3));
+    assert!(was_truncated);
+    assert_eq!(text, "a😀... [truncated]");
+
+    // A cut at 2 units would land inside the emoji; the whole character is
+    // dropped (Rust cannot represent the lone surrogate JS would produce).
+    let (text, was_truncated) = truncate_line("a😀b", Some(2));
+    assert!(was_truncated);
+    assert_eq!(text, "a... [truncated]");
 }
 
 #[test]

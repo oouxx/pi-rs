@@ -14,10 +14,20 @@ fn file_locks() -> &'static FileLocks {
 }
 
 fn get_queue_key(file_path: &str) -> String {
+    // v0.87.1 resolves to an absolute path first, then realpaths it. Without
+    // the resolve step, `a.txt` and `./a.txt` (before the file exists) hash to
+    // different queues and are not serialized.
     let path = Path::new(file_path);
-    match path.canonicalize() {
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    };
+    match resolved.canonicalize() {
         Ok(canonical) => canonical.to_string_lossy().to_string(),
-        Err(_) => path.to_string_lossy().to_string(),
+        Err(_) => resolved.to_string_lossy().to_string(),
     }
 }
 

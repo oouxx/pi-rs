@@ -1054,6 +1054,9 @@ impl SessionTask {
                 // possibly-stuck turn (Codex-CLI-style behavior).
                 self.cancelled
                     .store(true, std::sync::atomic::Ordering::SeqCst);
+                // Capture the abort request synchronously, before the next
+                // prompt can start a new run.
+                self.session.request_abort();
                 let session = Arc::clone(&self.session);
                 let fut: futures::future::LocalBoxFuture<'static, ()> = Box::pin(async move {
                     session.abort().await;
@@ -1208,6 +1211,9 @@ impl SessionTask {
         }
         self.cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Capture the abort request synchronously, before a queued prompt can
+        // start a new run.
+        self.session.request_abort();
         // Signal the run to stop. `abort()` waits for the agent to become
         // idle, so it runs as a separate task; the turn task observes the
         // abort, settles, and replies `cancelled`.

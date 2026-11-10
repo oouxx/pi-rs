@@ -70,7 +70,6 @@ pub fn prepare_branch_entries(
     token_budget: u64,
 ) -> BranchPreparation {
     let mut messages = Vec::new();
-    let file_ops = FileOperations::new();
     let mut total_tokens = 0u64;
 
     for entry in entries.iter().rev() {
@@ -86,6 +85,11 @@ pub fn prepare_branch_entries(
         messages.insert(0, message);
         total_tokens += tokens;
     }
+
+    // v0.87.1 `prepareBranchEntries` extracts read/written/edited files from
+    // the selected messages; without this the branch summary always reports
+    // empty file lists.
+    let file_ops = super::compaction::extract_file_operations(&messages);
 
     BranchPreparation {
         messages,
@@ -164,8 +168,14 @@ pub async fn generate_branch_summary(
         timestamp: chrono::Utc::now().timestamp_millis(),
     }];
 
-    // Call the LLM to generate the summary
-    let api_key = get_env_api_key(&options.model.provider, None).unwrap_or_default();
+    // Call the LLM to generate the summary. The caller's explicit API key
+    // wins; otherwise fall back to the provider environment variable
+    // (v0.87.1 `GenerateBranchSummaryOptions.apiKey`).
+    let api_key = options
+        .api_key
+        .clone()
+        .or_else(|| get_env_api_key(&options.model.provider, None))
+        .unwrap_or_default();
 
     let context = crate::pi_ai_types::Context {
         system_prompt: Some(
@@ -182,6 +192,9 @@ pub async fn generate_branch_summary(
         } else {
             Some(api_key)
         },
+        headers: options.headers.clone(),
+        env: options.env.clone(),
+        signal: options.signal.clone(),
         ..Default::default()
     };
 
@@ -194,7 +207,7 @@ pub async fn generate_branch_summary(
         thinking_budgets: None,
         debug: None,
     };
-    let summary = match super::compaction::complete_summarization(
+    let response = super::compaction::complete_summarization(
         &options.model,
         &context,
         simple_options,
@@ -202,32 +215,48 @@ pub async fn generate_branch_summary(
         options.callbacks.as_ref(),
     )
     .await
-    {
-        Ok(response) => {
-            let text = response
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    crate::pi_ai_types::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+    .map_err(BranchSummaryError::SummarizationFailed)?;
 
-            if text.trim().is_empty() {
-                format!("{}{}", BRANCH_SUMMARY_PREAMBLE, "No summary generated")
-            } else {
-                format!("{}{}", BRANCH_SUMMARY_PREAMBLE, text)
-            }
-        }
-        Err(_) => {
-            format!(
-                "{}Branch summary unavailable ({} entries)",
-                BRANCH_SUMMARY_PREAMBLE,
-                preparation.messages.len()
-            )
-        }
-    };
+    // v0.87.1 returns `{ aborted: true }` / `{ error }` instead of persisting a
+    // fake "Branch summary unavailable" summary.
+    if response.stop_reason == crate::pi_ai_types::StopReason::Aborted {
+        return Err(BranchSummaryError::Aborted(
+            "Branch summarization was aborted".to_string(),
+        ));
+    }
+    if response.stop_reason == crate::pi_ai_types::StopReason::Error {
+        return Err(BranchSummaryError::SummarizationFailed(
+            response
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "Branch summarization failed".to_string()),
+        ));
+    }
+    if response.stop_reason == crate::pi_ai_types::StopReason::Length {
+        return Err(BranchSummaryError::SummarizationFailed(
+            "Branch summarization was truncated by the length limit".to_string(),
+        ));
+    }
+    if response
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+    {
+        return Err(BranchSummaryError::SummarizationFailed(
+            "Branch summarization attempted to call a tool".to_string(),
+        ));
+    }
+
+    let text = response
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summary = format!("{}{}", BRANCH_SUMMARY_PREAMBLE, text);
 
     let mut read_files = preparation.file_ops.read.clone();
     let mut modified_files = preparation.file_ops.written.clone();

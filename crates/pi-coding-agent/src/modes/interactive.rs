@@ -37,6 +37,10 @@ enum AgentCmd {
     SetModel(String, String),
     CycleModel(String),
     CycleThinkingLevel,
+    /// `/thinking <level>`: set an explicit thinking level.
+    SetThinkingLevel(String),
+    /// `/export [path]`: export the session to HTML.
+    ExportSession(Option<String>),
     NewSession(Option<String>),
     SetSessionName(String),
     ExtensionCommand(String, String),
@@ -1056,6 +1060,12 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
             );
             vec![Effect::ClearAgentQueues]
         }
+        // v0.87.1 `tui.input.newLine` includes Ctrl+J; the readline keymap
+        // would otherwise swallow it.
+        KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+            app::update(&mut state.model, pi_tui::Msg::InputNewline);
+            vec![]
+        }
         _ => {
             let cmds = app::update(&mut state.model, pi_tui::Msg::Key(key));
             state.pending_cmds.extend(cmds);
@@ -1420,6 +1430,74 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
                 system(state, "Usage: /model <provider>/<model-id>".into());
                 vec![]
             }
+        }
+        "/thinking" => {
+            let level = args.trim().to_lowercase();
+            if level.is_empty() {
+                vec![Effect::AgentCommand(AgentCmd::CycleThinkingLevel)]
+            } else if ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                .contains(&level.as_str())
+            {
+                vec![Effect::AgentCommand(AgentCmd::SetThinkingLevel(level))]
+            } else {
+                system(
+                    state,
+                    format!(
+                        "Unknown thinking level '{args}'. Valid: off, minimal, low, medium, high, xhigh, max"
+                    ),
+                );
+                vec![]
+            }
+        }
+        "/export" => {
+            let path = if args.trim().is_empty() {
+                None
+            } else {
+                Some(args.trim().to_string())
+            };
+            vec![Effect::AgentCommand(AgentCmd::ExportSession(path))]
+        }
+        // Recognized commands that this build does not implement yet must not
+        // be sent to the model as ordinary user text (v0.87.1 handles them in
+        // interactive-mode.ts).
+        "/settings" => {
+            system(
+                state,
+                "Settings are stored in the agent settings file; edit it directly for now.".into(),
+            );
+            vec![]
+        }
+        "/resume" => {
+            system(
+                state,
+                "Resume a session by restarting with `--resume` or `/sessions` in the TUI.".into(),
+            );
+            vec![]
+        }
+        "/import" => {
+            system(
+                state,
+                "Usage: /import <session-file> (not wired to the TUI in this build).".into(),
+            );
+            vec![]
+        }
+        "/changelog" => {
+            system(state, "See the repository CHANGELOG for changes.".into());
+            vec![]
+        }
+        "/hotkeys" => {
+            system(
+                state,
+                "Hotkeys: Esc interrupt, Ctrl+C copy/abort, Ctrl+O expand, Tab complete, Shift+Enter newline.".into(),
+            );
+            vec![]
+        }
+        "/debug" => {
+            system(
+                state,
+                "Debug info: use `--verbose` and the session file under the agent directory.".into(),
+            );
+            vec![]
         }
         "/theme" => {
             // Switch the active palette. `/theme` toggles dark/light;
@@ -2518,6 +2596,12 @@ fn spawn_agent_command_task(
                                 continue;
                             };
                             let using_subscription = sess.get_model_registry().is_using_subscription(&model);
+                            // Capture the selected model's real capabilities
+                            // before `set_model` consumes it; hardcoding
+                            // `false`/`128000` made reasoning models and
+                            // non-128k windows display the wrong footer.
+                            let model_reasoning = model.reasoning;
+                            let model_context_window = model.context_window;
                             // Surface the outcome (the slash command already
                             // claimed success optimistically; set_model can
                             // fail on auth, and a silent drop left the footer
@@ -2526,9 +2610,9 @@ fn spawn_agent_command_task(
                                 Ok(()) => {
                                     let _ = result_tx.send(pi_tui::Msg::SetModelName(model_id.clone()));
                                     let _ = result_tx.send(pi_tui::Msg::SetProvider(Some(provider.clone())));
-                                    let _ = result_tx.send(pi_tui::Msg::SetReasoning(false));
+                                    let _ = result_tx.send(pi_tui::Msg::SetReasoning(model_reasoning));
                                     let _ = result_tx.send(pi_tui::Msg::SetUsingSubscription(using_subscription));
-                                    let _ = result_tx.send(pi_tui::Msg::SetContextWindow(128000));
+                                    let _ = result_tx.send(pi_tui::Msg::SetContextWindow(model_context_window));
                                     let _ = result_tx.send(pi_tui::Msg::NewMessage(
                                         "system".into(),
                                         format!("Switched to {provider}/{model_id}"),
@@ -2566,6 +2650,30 @@ fn spawn_agent_command_task(
                                     "system".into(),
                                     format!("Thinking level: {level}"),
                                 ));
+                            }
+                        }
+                        AgentCmd::SetThinkingLevel(level) => {
+                            sess.set_thinking_level(&level, false).await;
+                            let _ = result_tx.send(pi_tui::Msg::SetThinkingLevel(Some(level.clone())));
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                "system".into(),
+                                format!("Thinking level: {level}"),
+                            ));
+                        }
+                        AgentCmd::ExportSession(path) => {
+                            match sess.export_html_to_file(path.as_deref()) {
+                                Ok(file) => {
+                                    let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                        "system".into(),
+                                        format!("Exported session to {file}"),
+                                    ));
+                                }
+                                Err(error) => {
+                                    let _ = result_tx.send(pi_tui::Msg::NewMessage(
+                                        "system".into(),
+                                        format!("Export failed: {error}"),
+                                    ));
+                                }
                             }
                         }
                         AgentCmd::NewSession(parent) => {

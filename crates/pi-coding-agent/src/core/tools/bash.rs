@@ -935,6 +935,7 @@ pub fn create_bash_tool(
                             usage: None,
 
                             terminate: None,
+                            structured_content: None,
                         });
                     }
 
@@ -996,6 +997,7 @@ pub fn create_bash_tool(
                                             usage: None,
 
                                             terminate: None,
+                                            structured_content: None,
                                         });
                                     }
                                 }
@@ -1061,6 +1063,7 @@ pub fn create_bash_tool(
                                 usage: None,
 
                                 terminate: None,
+                                structured_content: None,
                             });
                         }
                         update_dirty.store(false, Ordering::SeqCst);
@@ -1099,6 +1102,7 @@ pub fn create_bash_tool(
                                 usage: None,
 
                                 terminate: None,
+                                structured_content: None,
                             })
                         }
                         Err(e) => {

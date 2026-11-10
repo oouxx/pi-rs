@@ -157,6 +157,7 @@ pub fn create_ls_tool(
                 let operations = operations.clone();
                 Box::pin(async move {
                     let dir_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                    // v0.87.1: `limit ?? DEFAULT_LIMIT` (no floor/clamp).
                     let limit = params
                         .get("limit")
                         .and_then(|v| v.as_u64())
@@ -175,6 +176,7 @@ pub fn create_ls_tool(
                                 usage: None,
 
                                 terminate: None,
+                                structured_content: None,
                             });
                         }
                     }
@@ -182,46 +184,22 @@ pub fn create_ls_tool(
                     // Check if path exists
                     let exists = operations.exists(&absolute_path_str).await.unwrap_or(false);
                     if !exists {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!(
-                                "Path not found: {}",
-                                dir_path
-                            ))],
-                            details: serde_json::Value::Null,
-                            usage: None,
-                            terminate: None,
-                        });
+                        // v0.87.1 rejects; a successful text result would make
+                        // `isError` false for a missing path.
+                        return Err(format!("Path not found: {dir_path}").into());
                     }
 
                     // Check if path is a directory
                     let is_dir = operations.is_directory(&absolute_path_str).await.unwrap_or(false);
                     if !is_dir {
-                        return Ok(AgentToolResult {
-                            content: vec![ContentBlock::text(format!(
-                                "Not a directory: {}",
-                                dir_path
-                            ))],
-                            details: serde_json::Value::Null,
-                            usage: None,
-                            terminate: None,
-                        });
+                        return Err(format!("Not a directory: {dir_path}").into());
                     }
 
                     // Read directory entries
-                    let entries = match operations.read_dir(&absolute_path_str).await {
-                        Ok(e) => e,
-                        Err(e) => {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text(format!(
-                                    "Error reading directory: {}",
-                                    e
-                                ))],
-                                details: serde_json::Value::Null,
-                                usage: None,
-                                terminate: None,
-                            });
-                        }
-                    };
+                    let entries = operations
+                        .read_dir(&absolute_path_str)
+                        .await
+                        .map_err(|e| format!("Cannot read directory: {e}"))?;
 
                     // Sort case-insensitively
                     let mut sorted = entries;
@@ -236,7 +214,12 @@ pub fn create_ls_tool(
                             break;
                         }
                         let full_path = std::path::Path::new(&absolute_path_str).join(entry);
-                        let suffix = if full_path.is_dir() { "/" } else { "" };
+                        // A stat failure skips the entry (v0.87.1 `continue`).
+                        let suffix = match tokio::fs::metadata(&full_path).await {
+                            Ok(meta) if meta.is_dir() => "/",
+                            Ok(_) => "",
+                            Err(_) => continue,
+                        };
                         results.push(format!("{}{}", entry, suffix));
                     }
 
@@ -247,11 +230,21 @@ pub fn create_ls_tool(
                             usage: None,
 
                             terminate: None,
+                            structured_content: None,
                         });
                     }
 
                     let raw_output = results.join("\n");
-                    let truncation = truncate::truncate_head(&raw_output, None);
+                    // v0.87.1 applies only the byte cap here
+                    // (`maxLines: Number.MAX_SAFE_INTEGER`); the entry count is
+                    // already capped by `limit`.
+                    let truncation = truncate::truncate_head(
+                        &raw_output,
+                        Some(truncate::TruncationOptions {
+                            max_lines: Some(usize::MAX),
+                            max_bytes: None,
+                        }),
+                    );
                     let mut details = LsToolDetails::default();
                     let mut notices: Vec<String> = Vec::new();
 
@@ -287,6 +280,7 @@ pub fn create_ls_tool(
                         usage: None,
 
                         terminate: None,
+                        structured_content: None,
                     })
                 })
             },

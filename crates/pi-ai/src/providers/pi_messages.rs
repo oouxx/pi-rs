@@ -597,9 +597,13 @@ fn format_pi_messages_response_error(
 }
 
 fn truncate_diagnostic_string(value: &str) -> String {
+    use crate::utils::text::{truncate_utf16, utf16_len};
+    // v0.87.1 measures `value.length` (UTF-16 code units) and slices at that
+    // boundary. A byte slice panics whenever byte 8192 lands inside a
+    // multi-byte character.
     const MAX_LENGTH: usize = 8192;
-    if value.len() > MAX_LENGTH {
-        format!("{}…", &value[..MAX_LENGTH])
+    if utf16_len(value) > MAX_LENGTH {
+        format!("{}…", truncate_utf16(value, MAX_LENGTH))
     } else {
         value.to_string()
     }
@@ -678,8 +682,10 @@ pub fn stream_pi_messages(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    // Collapse transcript system messages into the leading prompt/tools (P1-7).
-    let context = context.collapsed();
+    // v0.87.1 sends the (uncollapsed) `TranscriptContext` to pi-messages;
+    // the backend expects system messages in place, not a collapsed
+    // `systemPrompt` shorthand.
+    let context = context.clone();
     let owned_options = options.cloned();
     let api_key = owned_options
         .as_ref()
@@ -764,9 +770,19 @@ async fn stream_pi_messages_inner(
     if options.and_then(|o| o.debug).unwrap_or(false) {
         url.push_str("?debug=1");
     }
+    // Normalize the shorthand `systemPrompt`/`tools` into a leading system
+    // message and send only `{ messages }` (v0.87.1 `TranscriptContext`).
+    let transcript_messages = crate::utils::transcript::normalize_context(
+        context.system_prompt.as_deref(),
+        context.tools.as_deref(),
+        &serde_json::to_value(&context.messages)
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default(),
+    );
     let payload = json!({
         "model": model.id,
-        "context": context,
+        "context": { "messages": transcript_messages },
         "options": {
             "temperature": options.and_then(|o| o.temperature),
             "maxTokens": options.and_then(|o| o.max_tokens),
@@ -1202,6 +1218,27 @@ mod tests {
             create_pi_messages_response_error(&model, "u", 500, "Internal Server Error", "oops");
         assert!(err.diagnostic_details.contains_key("body"));
         assert!(!err.diagnostic_details.contains_key("error"));
+    }
+
+    #[test]
+    fn test_truncate_diagnostic_string_is_utf16_safe() {
+        assert_eq!(truncate_diagnostic_string("你好"), "你好");
+
+        // 5000 emoji == 10000 UTF-16 units. The old byte slice would panic
+        // because byte 8192 falls inside an emoji; the safe cut keeps 4096
+        // emoji (8192 units) and never splits a surrogate pair.
+        let long = "😀".repeat(5000);
+        assert_eq!(
+            truncate_diagnostic_string(&long),
+            format!("{}…", "😀".repeat(4096))
+        );
+
+        // CJK characters are one UTF-16 unit each, so exactly 8192 are kept.
+        let cjk = "你".repeat(9000);
+        assert_eq!(
+            truncate_diagnostic_string(&cjk),
+            format!("{}…", "你".repeat(8192))
+        );
     }
 
     #[tokio::test]

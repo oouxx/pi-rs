@@ -53,6 +53,7 @@ pub(crate) fn tool_call_output_to_agent_result(
         details: output.details.unwrap_or(serde_json::Value::Null),
         usage: None,
         terminate: output.terminate,
+        structured_content: None,
     };
     if output.is_error {
         let error: Box<dyn std::error::Error + Send + Sync> = Box::new(ToolExecutionError::new(
@@ -131,6 +132,7 @@ where
                     details,
                     usage: None,
                     terminate: None,
+                    structured_content: None,
                 };
                 if output.is_error {
                     let failure_result = pi_agent_core::types::AgentToolResult {
@@ -139,6 +141,7 @@ where
                             .unwrap_or(serde_json::Value::Null),
                         usage: result.usage,
                         terminate: result.terminate,
+                        structured_content: None,
                     };
                     let error: Box<dyn std::error::Error + Send + Sync> = Box::new(
                         ToolExecutionError::new(failure_result, "Tool execution failed"),

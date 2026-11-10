@@ -36,13 +36,18 @@ pub fn to_display_path(value: &str) -> String {
     value.replace('\\', "/")
 }
 
-/// TS `findLastDelimiter`: byte index of the last delimiter (an ASCII path
-/// delimiter or a [`is_separator`] character).
+/// TS `findLastDelimiter`: byte offset **after** the last delimiter (an ASCII
+/// path delimiter or a [`is_separator`] character).
+///
+/// TS returns `index - 1` where `index` is the UTF-16 position after the
+/// delimiter, so callers slice `text.slice(index)`. Returning the byte offset
+/// after the delimiter gives Rust callers the same "slice from here" contract
+/// and is always a valid char boundary, even for multi-byte separators.
 pub fn find_last_delimiter(text: &str) -> Option<usize> {
     let mut last = None;
     for (index, c) in text.char_indices() {
         if PATH_DELIMITERS.contains(&c) || is_separator(c) {
-            last = Some(index);
+            last = Some(index + c.len_utf8());
         }
     }
     last
@@ -280,8 +285,14 @@ mod cjk_separator_tests {
     fn cjk_punctuation_separates_tokens() {
         let text = "查看，@REA";
         let last = find_last_delimiter(text).expect("the ，is a delimiter");
-        assert_eq!(&text[last + '，'.len_utf8()..], "@REA");
-        assert!(is_token_start(text, last + '，'.len_utf8()));
+        assert_eq!(&text[last..], "@REA");
+        assert!(is_token_start(text, last));
+
+        // The returned offset is after the separator and always a char
+        // boundary, so `&text[offset..]` cannot panic on a multi-byte
+        // separator (the old code added 1 to the separator's first byte).
+        assert!(text.is_char_boundary(last));
+        assert_eq!(&text[last..], "@REA");
 
         // A CJK letter is not a separator.
         assert!(!is_separator('查'));

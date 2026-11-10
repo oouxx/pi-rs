@@ -281,6 +281,7 @@ pub fn create_read_tool(
                                 .unwrap_or(serde_json::Value::Null),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         });
                     }
 
@@ -370,6 +371,7 @@ pub fn create_read_tool(
                         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
                         usage: None,
                         terminate: None,
+                        structured_content: None,
                     })
                 })
             },

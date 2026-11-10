@@ -121,7 +121,12 @@ pub fn build_base_options(
         metadata: opts.base.metadata.clone(),
         tool_choice: opts.base.tool_choice.clone(),
         service_tier: opts.base.service_tier.clone(),
-        reasoning_effort: opts.reasoning.clone(),
+        // v0.87.1 clamps the level and maps "off" to undefined (no reasoning
+        // parameter), rather than forwarding it verbatim.
+        reasoning_effort: match opts.reasoning.as_deref() {
+            None | Some("off") => None,
+            Some(level) => clamp_reasoning(Some(level)),
+        },
         thinking_budgets: opts.thinking_budgets.clone(),
         debug: opts.debug,
         // Hooks must survive the simple→full options conversion (match TS

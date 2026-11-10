@@ -49,7 +49,7 @@ Options:
   --description <text>  Describe what the server offers";
 
 /// Handle `pi-rs mcp ...`. Returns a process exit code.
-pub fn handle_mcp_command(args: &[String]) -> i32 {
+pub async fn handle_mcp_command(args: &[String]) -> i32 {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
@@ -66,7 +66,7 @@ pub fn handle_mcp_command(args: &[String]) -> i32 {
         "remove" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::Remove),
         "enable" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::SetEnabled(true)),
         "disable" => cmd_edit(&args[1..], &cwd, &agent_dir, Edit::SetEnabled(false)),
-        "login" => cmd_login(&args[1..], &cwd, &agent_dir),
+        "login" => cmd_login(&args[1..], &cwd, &agent_dir).await,
         "logout" => cmd_logout(&args[1..], &cwd, &agent_dir),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
@@ -308,7 +308,7 @@ fn cmd_edit(args: &[String], cwd: &str, agent_dir: &str, edit: Edit) -> i32 {
     }
 }
 
-fn cmd_login(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
+async fn cmd_login(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
     let mut name = None;
     let mut timeout_secs = 300u64;
     let mut index = 0;
@@ -361,14 +361,10 @@ fn cmd_login(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
     };
     let store = McpOAuthCredentialStore::new(Path::new(agent_dir)).for_server(&name, url.as_str());
     let connection = McpServerConnection::with_agent_dir(server.clone(), cwd, agent_dir);
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("{} {error}", "Error:".red().bold());
-            return 1;
-        }
-    };
-    runtime.block_on(async move {
+    // `handle_mcp_command` is awaited from the process-wide `#[tokio::main]`
+    // runtime. Building a second runtime and calling `block_on` here panics
+    // ("Cannot start a runtime from within a runtime").
+    async move {
         // Connecting first tells us whether a sign-in is actually needed.
         match connection.get_client().await {
             Ok(_) => {
@@ -453,7 +449,8 @@ fn cmd_login(args: &[String], cwd: &str, agent_dir: &str) -> i32 {
                 1
             }
         }
-    })
+    }
+    .await
 }
 
 fn cmd_logout(args: &[String], cwd: &str, agent_dir: &str) -> i32 {

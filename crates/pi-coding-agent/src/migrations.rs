@@ -29,22 +29,32 @@ pub fn migrate_auth_to_auth_json(agent_dir_override: Option<std::path::PathBuf>)
 
     // Migrate oauth.json
     if oauth_path.exists() {
+        let mut parsed = false;
         if let Ok(content) = std::fs::read_to_string(&oauth_path) {
             if let Ok(oauth) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(obj) = oauth.as_object() {
                     for (provider, cred) in obj {
-                        let entry = serde_json::json!({
-                            "type": "oauth",
-                            "credential": cred
-                        });
-                        migrated.insert(provider.clone(), entry);
+                        // v0.87.1 flattens the credential into the entry
+                        // (`{ type: "oauth", access, refresh, expires }`);
+                        // a nested `credential` object cannot deserialize
+                        // into `AuthCredential::OAuth`.
+                        let mut entry = cred.as_object().cloned().unwrap_or_default();
+                        entry.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("oauth".to_string()),
+                        );
+                        migrated.insert(provider.clone(), serde_json::Value::Object(entry));
                         providers.push(provider.clone());
                     }
+                    parsed = true;
                 }
             }
         }
-        // Rename oauth.json → oauth.json.migrated
-        let _ = std::fs::rename(&oauth_path, oauth_path.with_extension("json.migrated"));
+        // Only retire oauth.json when it parsed; a malformed file is left in
+        // place so the user can recover it.
+        if parsed {
+            let _ = std::fs::rename(&oauth_path, oauth_path.with_extension("json.migrated"));
+        }
     }
 
     // Migrate settings.json apiKeys

@@ -813,7 +813,7 @@ async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "config" => handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await,
         "refresh" => handle_refresh_command(args, &cwd, &agent_dir).await,
-        "mcp" => crate::mcp_cli::handle_mcp_command(args),
+        "mcp" => crate::mcp_cli::handle_mcp_command(args).await,
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
             EXIT_FAILURE

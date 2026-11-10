@@ -407,7 +407,7 @@ async fn print_credential(
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis();
-                        if credentials.expires <= now_ms + min_expiry as u128 {
+                        if u128::from(credentials.expires) <= now_ms + min_expiry as u128 {
                             return Err(format!(
                                 "OAuth token for \"{provider_id}\" expires sooner than the requested --min-expiry; refresh is not supported"
                             ));

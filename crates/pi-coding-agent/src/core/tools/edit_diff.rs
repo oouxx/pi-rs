@@ -372,7 +372,10 @@ pub fn count_occurrences(content: &str, old_text: &str) -> usize {
     let fuzzy_old_text = normalize_for_fuzzy_match(old_text);
 
     if fuzzy_old_text.is_empty() {
-        return 0;
+        // JS `content.split("")` returns one entry per UTF-16 code unit plus
+        // the trailing empty string, so `length - 1 == utf16_len + 1`; the
+        // caller then reports a Duplicate match.
+        return pi_ai::utils::text::utf16_len(&fuzzy_content) + 1;
     }
 
     let mut count = 0;
@@ -774,6 +777,11 @@ pub fn generate_diff_string(
                     }
                 }
                 similar::DiffOp::Delete { .. } => {
+                    // v0.87.1 sets firstChangedLine for any added/removed
+                    // part, including pure deletions.
+                    if first_changed_line.is_none() {
+                        first_changed_line = Some(new_line);
+                    }
                     for i in 0..old_range.len() {
                         let idx = old_range.start + i;
                         let line = if idx < old_lines.len() {

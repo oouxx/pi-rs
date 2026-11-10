@@ -200,6 +200,8 @@ pub async fn dispatch_tool_result(
                     details,
                     is_error: Some(is_error),
                     terminate: None,
+                    usage: None,
+                    structured_content: None,
                 })
             } else {
                 None

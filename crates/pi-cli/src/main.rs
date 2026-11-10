@@ -56,6 +56,10 @@ async fn main() {
         load_env_file(&dot_env);
     }
 
+    // One-time auth/settings migrations must run before any command reads
+    // auth.json (v0.87.1 calls runMigrations at startup).
+    pi_coding_agent::migrations::run_migrations();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Generic agent attribution markers for child processes (TS cli.ts

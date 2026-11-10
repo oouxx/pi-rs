@@ -839,6 +839,7 @@ pub async fn create_agent_session(
             description: s.description,
             file_path: s.file_path,
             base_dir: s.base_dir,
+            disable_model_invocation: s.disable_model_invocation,
         })
         .collect();
 

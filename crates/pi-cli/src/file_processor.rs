@@ -43,6 +43,23 @@ impl Default for ProcessFileOptions {
 /// content wrapped in `<file>` tags. Image files are detected via magic bytes
 /// and returned as image attachments with a text reference.
 pub fn process_file_arguments(file_args: &[String], cwd: &str) -> ProcessedFiles {
+    process_file_arguments_with_options(
+        file_args,
+        cwd,
+        &ProcessFileOptions {
+            // v0.87.1's CLI passes `autoResizeImages: false`; the agent
+            // resizes later, after extension hooks select the request model.
+            auto_resize_images: false,
+        },
+    )
+}
+
+/// Same as [`process_file_arguments`] with explicit options.
+pub fn process_file_arguments_with_options(
+    file_args: &[String],
+    cwd: &str,
+    options: &ProcessFileOptions,
+) -> ProcessedFiles {
     let mut text = String::new();
     let mut images = Vec::new();
 
@@ -91,15 +108,31 @@ pub fn process_file_arguments(file_args: &[String], cwd: &str) -> ProcessedFiles
         // Detect if it's an image file
         match detect_supported_image_mime_type_from_file(&path_str) {
             Ok(Some(mime_type)) => {
-                // Read and encode image
-                match read_image_file(&path_str) {
-                    Ok(data) => {
-                        images.push(ImageAttachment {
-                            data: data.clone(),
-                            mime_type: mime_type.clone(),
-                        });
-                        text.push_str(&format!("<file name=\"{path_str}\"></file>\n"));
-                    }
+                match read_image_bytes(&path_str) {
+                    Ok(buffer) => match pi_coding_agent::utils::image_process::process_image(
+                        &buffer,
+                        &mime_type,
+                        options.auto_resize_images,
+                        None,
+                    ) {
+                        Ok(processed) => {
+                            images.push(ImageAttachment {
+                                data: processed.data,
+                                mime_type: processed.mime_type,
+                            });
+                            if processed.hints.is_empty() {
+                                text.push_str(&format!("<file name=\"{path_str}\"></file>\n"));
+                            } else {
+                                text.push_str(&format!(
+                                    "<file name=\"{path_str}\">{}</file>\n",
+                                    processed.hints.join("\n")
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            text.push_str(&format!("<file name=\"{path_str}\">{e}</file>\n"));
+                        }
+                    },
                     Err(e) => {
                         text.push_str(&format!("<file name=\"{path_str}\">{e}</file>\n"));
                     }
@@ -146,43 +179,11 @@ fn read_text_file(path: &str) -> Result<String, String> {
     Ok(content)
 }
 
-/// Maximum image dimension (width or height) for auto-resize.
-/// Matches the TS resizeImage default of 2048 pixels.
-const MAX_IMAGE_DIMENSION: u32 = 2048;
-
-/// Read an image file, optionally resize it, and base64-encode the result.
-/// When auto_resize is true, images larger than MAX_IMAGE_DIMENSION are
-/// scaled down to fit within that bound while maintaining aspect ratio.
-/// This matches the TS resizeImage behavior in file-processor.ts.
-fn read_image_file(path: &str) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open image: {e}"))?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| format!("Failed to read image: {e}"))?;
-
-    // Auto-resize if enabled and image is large
-    if let Ok(img) = image::load_from_memory(&buffer) {
-        let (w, h) = (img.width(), img.height());
-        if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
-            let ratio = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
-            let new_w = (w as f64 * ratio) as u32;
-            let new_h = (h as f64 * ratio) as u32;
-            let resized = img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3);
-            let mut output = std::io::Cursor::new(Vec::new());
-            resized
-                .write_to(&mut output, image::ImageFormat::Png)
-                .map_err(|e| format!("Failed to encode resized image: {e}"))?;
-            return Ok(base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                output.get_ref(),
-            ));
-        }
-    }
-
-    Ok(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &buffer,
-    ))
+/// Read an image file into memory. Resizing/encoding is delegated to
+/// `pi_coding_agent::utils::image_process::process_image`, which preserves the
+/// processed MIME type and returns conversion/resize hints.
+fn read_image_bytes(path: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("Failed to read image: {e}"))
 }
 
 /// Process @file references embedded in a message string.
@@ -272,6 +273,31 @@ mod tests {
         let result = process_file_arguments(&[a, b], dir.path().to_str().unwrap());
         assert!(result.text.contains("file a"));
         assert!(result.text.contains("file b"));
+    }
+
+    #[test]
+    fn test_process_image_uses_processed_mime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.png");
+        let image = image::RgbaImage::new(1, 1);
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut buffer, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(&path, buffer.into_inner()).unwrap();
+
+        let result = process_file_arguments_with_options(
+            &[path.to_string_lossy().to_string()],
+            dir.path().to_str().unwrap(),
+            &ProcessFileOptions {
+                auto_resize_images: false,
+            },
+        );
+
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].mime_type, "image/png");
+        assert!(!result.images[0].data.is_empty());
+        assert!(result.text.contains("<file name="));
     }
 
     #[test]

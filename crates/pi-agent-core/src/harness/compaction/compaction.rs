@@ -8,67 +8,79 @@ use crate::types::AgentMessage;
 // External pi_ai crate imports (not re-exported through pi_ai_types)
 use pi_ai::stream::complete_simple as pi_complete;
 
+/// UTF-16 code units in a string (JS `String.prototype.length`).
+fn utf16_chars(text: &str) -> u64 {
+    pi_ai::utils::text::utf16_len(text) as u64
+}
+
+/// Text + image character count (TS `estimateTextAndImageContentChars`).
+fn content_chars(content: &[crate::pi_ai_types::ContentBlock]) -> u64 {
+    content
+        .iter()
+        .map(|block| match block {
+            crate::pi_ai_types::ContentBlock::Text { text, .. } => utf16_chars(text),
+            crate::pi_ai_types::ContentBlock::Image { .. } => 4800,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Estimate token count for a message (match v0.87.1 `estimateTokens`).
+///
+/// Counts UTF-16 code units, includes image blocks (4800 chars), assistant
+/// thinking and tool-call arguments, system sections/toolsAdded, and uses
+/// `ceil(chars / 4)` (0 for an empty message, not 1).
 pub fn estimate_tokens(message: &AgentMessage) -> u64 {
-    let text = match message {
-        AgentMessage::User { content, .. } => content
-            .iter()
-            .map(|b| match b {
-                crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
-                _ => String::new(),
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+    let chars = match message {
+        AgentMessage::System {
+            content,
+            sections,
+            tools_added,
+            ..
+        } => {
+            let mut count = match content {
+                crate::pi_ai_types::SystemContent::Text(text) => utf16_chars(text),
+                crate::pi_ai_types::SystemContent::Blocks(blocks) => content_chars(blocks),
+            };
+            if let Some(sections) = sections {
+                for section in sections.values().flatten() {
+                    count += utf16_chars(section);
+                }
+            }
+            if let Some(tools_added) = tools_added {
+                count += utf16_chars(&serde_json::to_string(tools_added).unwrap_or_default());
+            }
+            count
+        }
+        AgentMessage::User { content, .. } => content_chars(content),
         AgentMessage::Assistant { content, .. } => content
             .iter()
-            .map(|b| match b {
-                crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
+            .map(|block| match block {
+                crate::pi_ai_types::ContentBlock::Text { text, .. } => utf16_chars(text),
+                crate::pi_ai_types::ContentBlock::Thinking { thinking, .. } => {
+                    utf16_chars(thinking)
+                }
                 crate::pi_ai_types::ContentBlock::ToolCall {
                     name, arguments, ..
                 } => {
-                    format!("{} {}", name, arguments)
+                    utf16_chars(name)
+                        + utf16_chars(&serde_json::to_string(arguments).unwrap_or_default())
                 }
-                _ => String::new(),
+                _ => 0,
             })
-            .collect::<Vec<_>>()
-            .join(" "),
-        AgentMessage::ToolResult { content, .. } => content
-            .iter()
-            .map(|b| match b {
-                crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
-                _ => String::new(),
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
+            .sum(),
+        AgentMessage::ToolResult { content, .. } => content_chars(content),
         AgentMessage::BashExecution {
             command, output, ..
-        } => format!("{} {}", command, output),
+        } => utf16_chars(command) + utf16_chars(output),
         AgentMessage::Custom { content, .. } => match content {
-            crate::types::CustomContent::Text(t) => t.clone(),
-            crate::types::CustomContent::Blocks(blocks) => blocks
-                .iter()
-                .map(|b| match b {
-                    crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
+            crate::types::CustomContent::Text(text) => utf16_chars(text),
+            crate::types::CustomContent::Blocks(blocks) => content_chars(blocks),
         },
-        AgentMessage::BranchSummary { summary, .. } => summary.clone(),
-        AgentMessage::CompactionSummary { summary, .. } => summary.clone(),
-        AgentMessage::System { content, .. } => match content {
-            crate::pi_ai_types::SystemContent::Text(t) => t.clone(),
-            crate::pi_ai_types::SystemContent::Blocks(blocks) => blocks
-                .iter()
-                .map(|b| match b {
-                    crate::pi_ai_types::ContentBlock::Text { text, .. } => text.clone(),
-                    _ => String::new(),
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        },
+        AgentMessage::BranchSummary { summary, .. }
+        | AgentMessage::CompactionSummary { summary, .. } => utf16_chars(summary),
     };
-
-    (text.len() as u64 / 4).max(1)
+    chars.div_ceil(4)
 }
 
 pub fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
@@ -102,31 +114,76 @@ pub struct CutPoint {
     pub is_split_turn: bool,
 }
 
-pub fn find_cut_point(messages: &[AgentMessage], tokens_to_keep: u64) -> CutPoint {
-    let mut accumulated_tokens = 0u64;
-    let mut first_kept_entry_index = messages.len();
-    let mut turn_start_index = messages.len();
+/// Turn-start roles in v0.87.1 `isTurnStartEntry`.
+fn is_turn_start_message(message: &AgentMessage) -> bool {
+    matches!(
+        message,
+        AgentMessage::User { .. }
+            | AgentMessage::BashExecution { .. }
+            | AgentMessage::Custom { .. }
+            | AgentMessage::BranchSummary { .. }
+            | AgentMessage::CompactionSummary { .. }
+    )
+}
 
+/// Match v0.87.1 `findCutPoint` on the filtered message vector.
+///
+/// Valid cut points never split a tool call from its result. The budget check
+/// is `>= keepRecentTokens` (not `>`), and a cut is a turn start for user,
+/// bashExecution, custom, branchSummary and compactionSummary messages.
+pub fn find_cut_point(messages: &[AgentMessage], tokens_to_keep: u64) -> CutPoint {
+    let cut_points: Vec<usize> = (0..messages.len())
+        .filter(|&index| !matches!(messages[index], AgentMessage::ToolResult { .. }))
+        .collect();
+    if cut_points.is_empty() {
+        return CutPoint {
+            first_kept_entry_index: 0,
+            turn_start_index: 0,
+            is_split_turn: false,
+        };
+    }
+
+    let mut accumulated_tokens = 0u64;
+    let mut cut_index = cut_points[0];
     for i in (0..messages.len()).rev() {
         let msg_tokens = estimate_tokens(&messages[i]);
-        if accumulated_tokens + msg_tokens > tokens_to_keep {
-            break;
+        if msg_tokens == 0 {
+            continue;
         }
         accumulated_tokens += msg_tokens;
-        first_kept_entry_index = i;
-
-        if let AgentMessage::User { .. } = messages[i] {
-            turn_start_index = i;
+        if accumulated_tokens >= tokens_to_keep {
+            let fallback = cut_points.last().copied().unwrap_or(cut_index);
+            cut_index = cut_points
+                .iter()
+                .copied()
+                .find(|&candidate| candidate >= i)
+                .unwrap_or(fallback);
+            break;
         }
     }
 
-    let is_split_turn =
-        first_kept_entry_index != turn_start_index && turn_start_index < messages.len();
+    // Include adjacent metadata entries that do not affect context.
+    while cut_index > 0 {
+        let prev = &messages[cut_index - 1];
+        if matches!(prev, AgentMessage::CompactionSummary { .. }) || estimate_tokens(prev) > 0 {
+            break;
+        }
+        cut_index -= 1;
+    }
+
+    let starts_turn = is_turn_start_message(&messages[cut_index]);
+    let turn_start = if starts_turn {
+        None
+    } else {
+        (0..cut_index)
+            .rev()
+            .find(|&index| is_turn_start_message(&messages[index]))
+    };
 
     CutPoint {
-        first_kept_entry_index,
-        turn_start_index,
-        is_split_turn,
+        first_kept_entry_index: cut_index,
+        turn_start_index: turn_start.unwrap_or(cut_index),
+        is_split_turn: !starts_turn && turn_start.is_some(),
     }
 }
 
@@ -140,8 +197,7 @@ pub fn get_last_assistant_usage(messages: &[AgentMessage]) -> Option<crate::pi_a
 }
 
 pub fn calculate_context_tokens(system_prompt: &str, messages: &[AgentMessage]) -> u64 {
-    let system_tokens = (system_prompt.len() as u64 / 4).max(1);
-    system_tokens + estimate_context_tokens(messages)
+    utf16_chars(system_prompt).div_ceil(4) + estimate_context_tokens(messages)
 }
 
 pub fn prepare_compaction(
@@ -149,9 +205,14 @@ pub fn prepare_compaction(
     context_window: u64,
     settings: &CompactionSettings,
 ) -> std::result::Result<CompactionPreparation, CompactionError> {
-    let messages: Vec<AgentMessage> = entries
-        .iter()
-        .filter_map(|e| match e {
+    // Keep a parallel map from each filtered message back to its entry. The
+    // cut point is computed on messages, but `first_kept_entry_id` must name
+    // an entry; using the message index directly shifts it whenever the
+    // session contains non-message entries (model/thinking changes, labels…).
+    let mut messages: Vec<AgentMessage> = Vec::new();
+    let mut message_entry_indices: Vec<usize> = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let message = match entry {
             SessionTreeEntry::Message { message, .. } => Some(message.clone()),
             SessionTreeEntry::Compaction {
                 summary,
@@ -170,8 +231,12 @@ pub fn prepare_compaction(
                 timestamp: chrono::Utc::now().timestamp_millis(),
             }),
             _ => None,
-        })
-        .collect();
+        };
+        if let Some(message) = message {
+            messages.push(message);
+            message_entry_indices.push(entry_index);
+        }
+    }
 
     let tokens_before = estimate_context_tokens(&messages);
     let tokens_to_keep = settings.keep_recent_tokens;
@@ -182,9 +247,10 @@ pub fn prepare_compaction(
 
     let cut_point = find_cut_point(&messages, tokens_to_keep);
 
-    let first_kept_entry_id = entries
+    let first_kept_entry_id = message_entry_indices
         .get(cut_point.first_kept_entry_index)
-        .map(|e| e.id().to_string())
+        .and_then(|&entry_index| entries.get(entry_index))
+        .map(|entry| entry.id().to_string())
         .unwrap_or_default();
 
     let messages_to_summarize: Vec<AgentMessage> =
@@ -221,7 +287,7 @@ pub fn prepare_compaction(
     })
 }
 
-fn extract_file_operations(messages: &[AgentMessage]) -> FileOperations {
+pub(crate) fn extract_file_operations(messages: &[AgentMessage]) -> FileOperations {
     let mut ops = FileOperations::new();
     for msg in messages {
         if let AgentMessage::Assistant { content, .. } = msg {
@@ -314,8 +380,18 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                     .collect::<Vec<_>>()
                     .join("");
                 if !text.is_empty() {
-                    let truncated = if text.len() > 2000 {
-                        format!("{}[...truncated]", &text[..2000])
+                    // v0.87.1: `text.length` is UTF-16 code units and
+                    // `slice(0, 2000)` never indexes bytes. A byte slice
+                    // panics whenever byte 2000 lands inside a multi-byte
+                    // character.
+                    const TOOL_RESULT_MAX_CHARS: usize = 2000;
+                    let total_units = pi_ai::utils::text::utf16_len(&text);
+                    let truncated = if total_units > TOOL_RESULT_MAX_CHARS {
+                        format!(
+                            "{}\n\n[... {} more characters truncated]",
+                            pi_ai::utils::text::truncate_utf16(&text, TOOL_RESULT_MAX_CHARS),
+                            total_units - TOOL_RESULT_MAX_CHARS
+                        )
                     } else {
                         text.clone()
                     };
@@ -626,8 +702,8 @@ mod tests {
     fn test_estimate_tokens_user_message() {
         let msg = create_user_message("Hello world");
         let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Hello world".len() as u64 / 4).max(1));
+        // v0.87.1: UTF-16 length 11, ceil(11 / 4) = 3.
+        assert_eq!(tokens, 3);
     }
 
     #[test]
@@ -643,9 +719,8 @@ mod tests {
             exclude_from_context: None,
         };
         let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        let combined = "ls -la file1 file2";
-        assert_eq!(tokens, (combined.len() as u64 / 4).max(1));
+        // command (6) + output (11) = 17 UTF-16 units, ceil(17 / 4) = 5.
+        assert_eq!(tokens, 5);
     }
 
     #[test]
@@ -661,8 +736,15 @@ mod tests {
             timestamp: 1000,
         };
         let tokens = estimate_tokens(&msg);
-        assert!(tokens > 0);
-        assert_eq!(tokens, ("Block content".len() as u64 / 4).max(1));
+        // "Block content" is 13 UTF-16 units, ceil(13 / 4) = 4.
+        assert_eq!(tokens, 4);
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty_message_is_zero() {
+        // v0.87.1 returns Math.ceil(0 / 4) == 0, not a forced minimum of 1.
+        let msg = create_user_message("");
+        assert_eq!(estimate_tokens(&msg), 0);
     }
 
     #[test]
@@ -777,14 +859,17 @@ mod tests {
     #[test]
     fn test_find_cut_point_split_turn() {
         let messages = vec![
-            create_assistant_message("Short reply", create_mock_usage(100, 50)),
             create_user_message("Hello"),
-            create_assistant_message("Response", create_mock_usage(100, 50)),
+            create_assistant_message(&"A".repeat(100), create_mock_usage(100, 50)),
+            create_user_message("Next"),
+            create_assistant_message(&"B".repeat(100), create_mock_usage(100, 50)),
         ];
-        let cut_point = find_cut_point(&messages, 10);
+        // Keep ~30 tokens: the cut lands on the assistant at index 1, so the
+        // preceding user message starts the split turn.
+        let cut_point = find_cut_point(&messages, 30);
         assert!(cut_point.is_split_turn);
-        assert_ne!(cut_point.first_kept_entry_index, cut_point.turn_start_index);
-        assert!(cut_point.turn_start_index < messages.len());
+        assert_eq!(cut_point.first_kept_entry_index, 1);
+        assert_eq!(cut_point.turn_start_index, 0);
     }
 
     #[test]
@@ -794,7 +879,10 @@ mod tests {
             create_tool_result_message("Tool result content here"),
         ];
         let cut_point = find_cut_point(&messages, 10_000);
-        assert_eq!(cut_point.turn_start_index, messages.len());
+        // No turn start exists before the cut, so `turn_start_index` falls
+        // back to the cut index and this is not a split turn.
+        assert_eq!(cut_point.first_kept_entry_index, 0);
+        assert_eq!(cut_point.turn_start_index, 0);
         assert!(!cut_point.is_split_turn);
     }
 
@@ -839,7 +927,7 @@ mod tests {
         ];
         let system_prompt = "You are a helpful assistant.";
         let total = calculate_context_tokens(system_prompt, &messages);
-        let expected_system = (system_prompt.len() as u64 / 4).max(1);
+        let expected_system = (system_prompt.encode_utf16().count() as u64).div_ceil(4);
         let expected_messages = estimate_context_tokens(&messages);
         assert_eq!(total, expected_system + expected_messages);
     }
@@ -848,7 +936,8 @@ mod tests {
     fn test_calculate_context_tokens_empty_system() {
         let messages = vec![create_user_message("Hello")];
         let total = calculate_context_tokens("", &messages);
-        let expected = 1 + estimate_context_tokens(&messages);
+        // An empty system prompt contributes 0 tokens (no forced minimum).
+        let expected = estimate_context_tokens(&messages);
         assert_eq!(total, expected);
     }
 
@@ -899,7 +988,30 @@ mod tests {
             timestamp: 1000,
         }];
         let result = serialize_conversation(&messages);
-        assert!(result.contains("[...truncated]"));
+        // 3000 - 2000 = 1000 characters removed, matching v0.87.1.
+        assert!(result.contains("[... 1000 more characters truncated]"));
+        assert!(!result.contains("[...truncated]"));
+    }
+
+    #[test]
+    fn test_serialize_conversation_truncation_is_utf16_safe() {
+        // Byte 2000 would fall inside an emoji: the old byte slice panicked.
+        let long_content = format!("a{}", "😀".repeat(2000));
+        let messages = vec![Message::ToolResult {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "read".to_string(),
+            content: vec![ContentBlock::Text {
+                text: long_content,
+                text_signature: None,
+            }],
+            details: None,
+            is_error: false,
+            usage: None,
+            timestamp: 1000,
+        }];
+        let result = serialize_conversation(&messages);
+        assert!(result.contains("more characters truncated"));
+        assert!(!result.contains('\u{FFFD}'));
     }
 
     #[test]

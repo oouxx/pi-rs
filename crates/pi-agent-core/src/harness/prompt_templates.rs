@@ -77,27 +77,45 @@ async fn load_prompt_template_from_file(
         }
     };
 
-    let (name, description, body, has_frontmatter) = parse_frontmatter(&content);
+    let (name, description, body, _has_frontmatter) = parse_frontmatter(&content);
 
-    let name = match name {
-        Some(n) => n,
-        None => {
-            if has_frontmatter {
-                diagnostics.push(PromptTemplateDiagnostic {
-                    diagnostic_type: "warning".to_string(),
-                    code: "missing_name".to_string(),
-                    message: "No name found in frontmatter, skipping".to_string(),
-                    path: file_path.to_string(),
-                });
-            }
-            return (None, diagnostics);
-        }
-    };
+    // v0.87.1 derives the template name from the filename
+    // (`basename(filePath).replace(/\.md$/, "")`); frontmatter is optional.
+    let name = name.unwrap_or_else(|| {
+        std::path::Path::new(&file_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string()
+    });
+    if name.is_empty() {
+        diagnostics.push(PromptTemplateDiagnostic {
+            diagnostic_type: "warning".to_string(),
+            code: "missing_name".to_string(),
+            message: "Could not derive a template name from the filename".to_string(),
+            path: file_path.to_string(),
+        });
+        return (None, diagnostics);
+    }
+
+    // v0.87.1 falls back to the first non-empty line (60 chars + "...").
+    let description = description.unwrap_or_else(|| {
+        body.lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| {
+                let mut out: String = line.chars().take(60).collect();
+                if line.chars().count() > 60 {
+                    out.push_str("...");
+                }
+                out
+            })
+            .unwrap_or_default()
+    });
 
     (
         Some(PromptTemplate {
             name,
-            description: description.unwrap_or_default(),
+            description,
             content: body,
         }),
         diagnostics,
@@ -505,7 +523,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_prompt_templates_skips_no_frontmatter() {
+    async fn test_load_prompt_templates_uses_filename_without_frontmatter() {
         let (env, path) = setup_test_env(
             "skip_no_fm",
             &[
@@ -515,24 +533,29 @@ mod tests {
         )
         .await;
         let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
-        assert_eq!(templates.len(), 1);
-        assert_eq!(templates[0].name, "ok");
-        // no_fm.md should not produce a diagnostic — it's silently skipped (no `---`)
+        // v0.87.1 uses the filename when frontmatter is absent.
+        assert_eq!(templates.len(), 2);
+        let no_fm = templates
+            .iter()
+            .find(|template| template.name == "no_fm")
+            .expect("filename-derived template");
+        assert_eq!(no_fm.description, "Just text without frontmatter");
         assert!(diagnostics.is_empty());
         let _ = fs::remove_dir_all(&path).await;
     }
 
     #[tokio::test]
-    async fn test_load_prompt_templates_diagnostic_on_missing_name() {
+    async fn test_load_prompt_templates_uses_filename_when_frontmatter_has_no_name() {
         let (env, path) = setup_test_env(
             "missing_name",
             &[("no_name.md", "---\ndescription: no name\n---\nBody")],
         )
         .await;
         let (templates, diagnostics) = load_prompt_templates(&env, &path).await;
-        assert!(templates.is_empty());
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "missing_name");
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].name, "no_name");
+        assert_eq!(templates[0].description, "no name");
+        assert!(diagnostics.is_empty());
         let _ = fs::remove_dir_all(&path).await;
     }
 

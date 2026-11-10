@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::core::agent_session::AgentSession;
-use pi_agent_core::pi_ai_types::{AssistantMessageEvent, ContentBlock, StopReason};
+use pi_agent_core::pi_ai_types::{ContentBlock, StopReason};
 use pi_agent_core::types::{AgentEvent, AgentMessage};
 
 /// Options for print mode, matching the original PrintModeOptions interface.
@@ -124,19 +124,6 @@ async fn run_text_mode(
     let listener: PrintModeListener = Arc::new(move |event: AgentEvent, _signal| {
         Box::pin(async move {
             match event {
-                AgentEvent::MessageUpdate {
-                    assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
-                    ..
-                } => {
-                    print!("{delta}");
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-                }
-                AgentEvent::MessageEnd { .. } => {
-                    // Final text is already streamed via TextDelta
-                    // Just add a trailing newline for clean exit
-                    println!();
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
-                }
                 AgentEvent::ToolExecutionStart {
                     tool_name, args, ..
                 } => {
@@ -196,7 +183,34 @@ async fn run_text_mode(
     // Give a brief moment for final events to flush
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    text_exit_code(&session.get_messages().await)
+    // Text mode prints the final assistant message's text blocks, not the
+    // streamed deltas or intermediate tool turns (v0.87.1 print-mode.ts).
+    let messages = session.get_messages().await;
+    if let Some(AgentMessage::Assistant {
+        content,
+        stop_reason,
+        error_message,
+        ..
+    }) = messages.last()
+    {
+        if matches!(
+            stop_reason,
+            Some(StopReason::Error | StopReason::Aborted)
+        ) {
+            eprintln!(
+                "{}",
+                error_message.as_deref().unwrap_or("Request failed")
+            );
+            return 1;
+        }
+        for block in content {
+            if let ContentBlock::Text { text, .. } = block {
+                println!("{text}");
+            }
+        }
+    }
+
+    text_exit_code(&messages)
 }
 
 /// Text mode fails only when the final assistant message stopped with an error
@@ -229,10 +243,18 @@ async fn run_json_mode(
     messages: &[String],
     images: &[ContentBlock],
 ) -> i32 {
-    println!(
-        "{}",
-        serde_json::json!({"type": "start", "message": message})
-    );
+    // The first JSON line is the session header, matching v0.87.1
+    // (`session.sessionManager.getHeader()`); there are no start/end
+    // sentinels.
+    let header_json = {
+        let manager = session.get_session_manager();
+        manager
+            .get_header()
+            .and_then(|header| serde_json::to_string(header).ok())
+    };
+    if let Some(header) = header_json {
+        println!("{header}");
+    }
 
     let listener: crate::core::agent_session::AgentSessionEventListener =
         Arc::new(|event: crate::core::agent_session::AgentSessionEvent| {
@@ -267,7 +289,6 @@ async fn run_json_mode(
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    println!("{}", serde_json::json!({"type": "end"}));
 
     0
 }

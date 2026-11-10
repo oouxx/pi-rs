@@ -52,6 +52,7 @@ pub fn create_error_tool_result(message: &str) -> crate::types::AgentToolResult<
         details: serde_json::Value::Object(Default::default()),
         usage: None,
         terminate: None,
+        structured_content: None,
     }
 }
 

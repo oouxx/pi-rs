@@ -242,7 +242,7 @@ impl Default for CompactionSettings {
         Self {
             enabled: true,
             reserve_tokens: 16_384,
-            keep_recent_tokens: 8192,
+            keep_recent_tokens: 20_000,
         }
     }
 }
@@ -250,7 +250,7 @@ impl Default for CompactionSettings {
 pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
     enabled: true,
     reserve_tokens: 16_384,
-    keep_recent_tokens: 8192,
+    keep_recent_tokens: 20_000,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1255,6 +1255,15 @@ pub struct ShellCaptureResult {
 
 pub struct GenerateBranchSummaryOptions {
     pub model: Model,
+    /// Explicit API key from the caller (TS `apiKey`); falls back to the
+    /// provider environment variable when absent.
+    pub api_key: Option<String>,
+    /// Request headers (TS `headers`).
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    /// Provider-scoped environment overlay (TS `env`).
+    pub env: Option<std::collections::HashMap<String, String>>,
+    /// Abort signal for cancellation (TS `signal`).
+    pub signal: Option<tokio::sync::watch::Receiver<bool>>,
     pub reserve_tokens: Option<u64>,
     pub custom_instructions: Option<String>,
     pub replace_instructions: Option<bool>,

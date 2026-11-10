@@ -854,7 +854,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     lines.join("\n")
 }
 
-fn escape_xml(s: &str) -> String {
+pub(crate) fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

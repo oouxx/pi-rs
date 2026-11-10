@@ -812,6 +812,10 @@ pub struct AgentSession {
     turn_index: Arc<std::sync::Mutex<u32>>,
     /// Whether the agent is currently processing a run.
     is_agent_run_active: Arc<std::sync::Mutex<bool>>,
+    /// Set by `abort()` while a run is active (TS `_agentRunAbortRequested`).
+    /// `run_settled_continuations` checks it before starting another run so an
+    /// aborted session cannot silently continue through the follow-up queue.
+    agent_run_abort_requested: Arc<std::sync::atomic::AtomicBool>,
     /// Whether `agent_settled` is being dispatched to extensions; runs
     /// requested meanwhile are deferred until every handler finished
     /// (matching TS `_isEmittingAgentSettled`).
@@ -1370,6 +1374,7 @@ impl AgentSession {
                                     details: output.details.unwrap_or(serde_json::Value::Null),
                                     usage: None,
                                     terminate: output.terminate,
+                                    structured_content: None,
                                 });
                             })
                         }
@@ -1546,6 +1551,7 @@ impl AgentSession {
                                 details: serde_json::json!({"loaded": []}),
                                 usage: None,
                                 terminate: None,
+                                structured_content: None,
                             });
                         }
                         agent.add_tools(additions).await;
@@ -1564,6 +1570,7 @@ impl AgentSession {
                             details: serde_json::json!({"loaded": names}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         })
                     });
                     future
@@ -1950,6 +1957,8 @@ impl AgentSession {
                         details: hook_result.as_ref().and_then(|r| r.details.clone()),
                         is_error: Some(is_error),
                         terminate: hook_result.as_ref().and_then(|r| r.terminate),
+                        usage: hook_result.as_ref().and_then(|r| r.usage.clone()),
+                        structured_content: None,
                     })
                 })
             });
@@ -2518,6 +2527,7 @@ impl AgentSession {
             _agent_subscription: Arc::new(std::sync::Mutex::new(None)),
             turn_index: Arc::new(std::sync::Mutex::new(0)),
             is_agent_run_active: Arc::new(std::sync::Mutex::new(false)),
+            agent_run_abort_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             is_emitting_agent_settled: Arc::new(std::sync::Mutex::new(false)),
             deferred_settled_actions: Arc::new(std::sync::Mutex::new(Vec::new())),
             idle_notify: Arc::new(Notify::new()),
@@ -4830,8 +4840,23 @@ impl AgentSession {
             // `agent_before_settle` boundary (TS `_runBeforeSettleBoundary`):
             // an extension may ask for one more provider request.
             let before_settle_continue = self.dispatch_before_settle_boundary().await;
+            // `_emit_agent_settled` clears `is_agent_run_active` and notifies
+            // idle waiters, so it must run even for an aborted run.
             self._emit_agent_settled().await;
-            if before_settle_continue && self.agent.continue_run().await.is_ok() {
+            // An aborted run must not restart through the follow-up queue
+            // (v0.87.1 `_agentRunAbortRequested`).
+            if self
+                .agent_run_abort_requested
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            if before_settle_continue
+                && !self
+                    .agent_run_abort_requested
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                && self.agent.continue_run().await.is_ok()
+            {
                 loop {
                     if !self._handle_post_agent_run().await {
                         break;
@@ -4841,6 +4866,12 @@ impl AgentSession {
                 continue;
             }
             if !self.agent.has_queued_messages().await {
+                break;
+            }
+            if self
+                .agent_run_abort_requested
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 break;
             }
             let continued = self.agent.continue_run().await.is_ok();
@@ -4864,6 +4895,12 @@ impl AgentSession {
     /// Returns true if the caller should continue the agent (retry or compaction triggered).
     /// Matches TS _handlePostAgentRun().
     async fn _handle_post_agent_run(&self) -> bool {
+        if self
+            .agent_run_abort_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
         let msg = self
             .last_assistant_message
             .lock()
@@ -5036,6 +5073,10 @@ References are relative to {}.
             .is_agent_run_active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        // A new run clears the previous abort request (v0.87.1 resets
+        // `_agentRunAbortRequested` at run start).
+        self.agent_run_abort_requested
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // Dispatch before_agent_start to extensions before the agent loop starts.
         // Extensions can cancel the agent start, modify the system prompt, or
@@ -5284,7 +5325,7 @@ References are relative to {}.
                 // error-message patterns, silent usage overflow, and
                 // length-stop overflow).
                 if context_window > 0 {
-                    let is_overflow = match assistant_message {
+                    let (is_overflow, recoverable_length) = match assistant_message {
                         AgentMessage::Assistant {
                             content,
                             api,
@@ -5313,15 +5354,24 @@ References are relative to {}.
                                 end_turn: None,
                                 timestamp: *timestamp,
                             };
-                            pi_agent_core::pi_ai::utils::overflow::is_context_overflow(
-                                &msg,
-                                Some(context_window),
+                            (
+                                pi_agent_core::pi_ai::utils::overflow::is_context_overflow(
+                                    &msg,
+                                    Some(context_window),
+                                ),
+                                // v0.87.1 also recovers a `length` stop that
+                                // ended below the model's intended output
+                                // limit (one bounded compact-and-retry).
+                                pi_agent_core::pi_ai::utils::overflow::is_recoverable_length(
+                                    &msg,
+                                    state.model.max_tokens,
+                                ),
                             )
                         }
-                        _ => false,
+                        _ => (false, false),
                     };
 
-                    if is_overflow {
+                    if is_overflow || recoverable_length {
                         let will_retry =
                             stop_reason != &Some(pi_agent_core::pi_ai_types::StopReason::Stop);
 
@@ -5931,6 +5981,7 @@ References are relative to {}.
         // _disconnectFromAgent() then abort() so the abort's agent_end
         // isn't processed / persisted).
         self._disconnect_from_agent().await;
+        self.request_abort();
         self.abort().await;
         // Manual-compaction abort signal (TS `_compactionAbortController`): makes
         // `is_compacting()` true, lets `abort_compaction()` cancel it, and makes
@@ -6132,6 +6183,19 @@ References are relative to {}.
             history_text
         };
 
+        // v0.87.1 appends the file-operation lists to the summary and stores
+        // them in `details` for cumulative file tracking.
+        let mut read_files = prepared.file_ops.read_files.clone();
+        let mut modified_files = prepared.file_ops.modified_files.clone();
+        read_files.sort();
+        modified_files.sort();
+        read_files.retain(|file| !modified_files.contains(file));
+        let summary = format!(
+            "{}{}",
+            summary,
+            crate::core::compaction::format_file_operations(&read_files, &modified_files)
+        );
+
         let first_kept_entry_id = match &extension_compaction {
             Some(compaction) => compaction.first_kept_entry_id.clone(),
             None => prepared.first_kept_entry_id.clone().unwrap_or_default(),
@@ -6195,7 +6259,10 @@ References are relative to {}.
             tokens_before: total_tokens,
             estimated_tokens_after: Some(estimated_tokens_after),
             usage: extension_usage,
-            details: Some(crate::core::compaction::CompactionDetails::default()),
+            details: Some(crate::core::compaction::CompactionDetails {
+                read_files,
+                modified_files,
+            }),
         })
     }
 
@@ -7553,8 +7620,26 @@ impl AgentSession {
     /// Abort the current operation and wait for the agent to become idle,
     /// matching TS `abort()` which calls abortRetry() + agent.abort() +
     /// waitForIdle().
+    /// Mark the current run as abort-requested without waiting for it to
+    /// settle. Callers that spawn `abort()` in the background must call this
+    /// synchronously first, otherwise the flag could be set after the next
+    /// run has already started (v0.87.1 sets `_agentRunAbortRequested` at
+    /// request time).
+    pub fn request_abort(&self) {
+        if *self
+            .is_agent_run_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            self.agent_run_abort_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     pub async fn abort(&self) {
         self.abort_retry();
+        self.abort_compaction();
+        self.abort_branch_summary();
         self.agent.abort().await;
         self.wait_for_idle().await;
     }
@@ -7708,6 +7793,7 @@ impl AgentSession {
                 description: s.description.clone(),
                 file_path: s.file_path.clone(),
                 base_dir: s.base_dir.clone(),
+                disable_model_invocation: s.disable_model_invocation,
             })
             .collect();
         let context_files: Vec<ContextFile> = loaded

@@ -39,6 +39,8 @@ pub struct ResolvedOpenAICompletionsCompat {
     pub chat_template_args: serde_json::Map<String, serde_json::Value>,
     pub zai_tool_stream: bool,
     pub supports_thinking_token_budget: bool,
+    pub thinking_token_budget_field: Option<String>,
+    pub vllm_priority: Option<u64>,
     pub supports_strict_mode: bool,
     pub supports_openai_grammar_tools: bool,
     pub cache_control_format: Option<String>,
@@ -157,6 +159,8 @@ fn detect_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         chat_template_args: serde_json::Map::new(),
         zai_tool_stream: false,
         supports_thinking_token_budget: false,
+        thinking_token_budget_field: None,
+        vllm_priority: None,
         // TS #9816: OpenAI compatibility alone does not imply strict JSON-schema
         // tool support. The generated catalog enables it explicitly for capable
         // built-in models; unknown/custom endpoints default to non-strict.
@@ -245,6 +249,11 @@ fn get_compat(model: &Model) -> ResolvedOpenAICompletionsCompat {
         supports_thinking_token_budget: compat
             .supports_thinking_token_budget
             .unwrap_or(detected.supports_thinking_token_budget),
+        thinking_token_budget_field: compat
+            .thinking_token_budget_field
+            .clone()
+            .or(detected.thinking_token_budget_field),
+        vllm_priority: compat.vllm_priority.or(detected.vllm_priority),
         supports_strict_mode: compat
             .supports_strict_mode
             .unwrap_or(detected.supports_strict_mode),
@@ -941,9 +950,15 @@ pub fn stream_openai(
     options: Option<&StreamOptions>,
 ) -> AssistantMessageEventStream {
     let model = model.clone();
-    // Collapse transcript system messages into the leading prompt/tools
-    // (P1-7); provider request building reads `systemPrompt`/`tools`.
-    let context = context.collapsed();
+    // v0.87.1 `resolveTranscript(context, supportsMidConvoSystemMessages)`:
+    // collapse only for models that cannot accept mid-conversation system
+    // messages; otherwise preserve the transcript so the provider request
+    // carries them in place.
+    let context = if get_compat(&model).supports_mid_convo_system_messages {
+        context.clone()
+    } else {
+        context.collapsed()
+    };
     let owned_options = options.cloned();
     let api_key = owned_options
         .as_ref()
@@ -1343,6 +1358,10 @@ fn apply_thinking_params(
         }
     }
 
+    if let Some(priority) = compat.vllm_priority {
+        body.insert("priority".into(), Value::Number(priority.into()));
+    }
+
     // vLLM caps reasoning with a top-level thinking_token_budget
     // (match TS buildParams).
     if compat.supports_thinking_token_budget && reasoning_effort.is_some() && model.reasoning {
@@ -1380,7 +1399,11 @@ fn apply_thinking_params(
         if let (Some(floor), Some(ceiling)) = (budget_floor, ceiling) {
             let budget = floor.min(ceiling.saturating_sub(1024));
             if budget > 0 {
-                body.insert("thinking_token_budget".into(), Value::Number(budget.into()));
+                let budget_field = compat
+                    .thinking_token_budget_field
+                    .as_deref()
+                    .unwrap_or("thinking_token_budget");
+                body.insert(budget_field.into(), Value::Number(budget.into()));
             }
         }
     }
@@ -1548,6 +1571,10 @@ async fn stream_openai_inner(
 
     apply_thinking_params(model, options, &compat, &mut body);
 
+    if let Some(priority) = compat.vllm_priority {
+        body.insert("priority".into(), Value::Number(priority.into()));
+    }
+
     // vLLM caps reasoning with a top-level thinking_token_budget. Independent
     // of thinkingFormat: reasoning and the answer share max_tokens here, so
     // an uncapped reasoning phase can consume the whole response and leave no
@@ -1601,7 +1628,11 @@ async fn stream_openai_inner(
         // Always leave room for the answer (TS MIN_ANSWER_TOKENS = 1024).
         let budget = budget_level.min(ceiling.saturating_sub(1024));
         if budget > 0 {
-            body.insert("thinking_token_budget".into(), Value::Number(budget.into()));
+            let budget_field = compat
+                    .thinking_token_budget_field
+                    .as_deref()
+                    .unwrap_or("thinking_token_budget");
+                body.insert(budget_field.into(), Value::Number(budget.into()));
         }
     }
 
@@ -1746,6 +1777,10 @@ async fn stream_openai_inner(
         partial: output.clone(),
     });
 
+    // Catch stream errors after the body so the partial content/usage is
+    // preserved in the emitted `error` event (v0.87.1 catch reuses `output`).
+    use futures::StreamExt;
+    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
     // `reasoning_details` are replay metadata, not user-visible deltas: keep
     // them in memory and serialize once into the thinking block's signature
     // (TS `streamedReasoningDetails` + `applyStreamedReasoningDetails`).
@@ -2239,11 +2274,43 @@ async fn stream_openai_inner(
     // Calculate cost
     crate::models::calculate_cost(model, &mut output.usage);
 
-    let _ = tx.send(AssistantMessageEvent::Done {
-        reason: output.stop_reason.clone(),
-        message: output,
-    });
+    // v0.87.1 throws for `error`/`pending`; the catch emits an `error` event.
+    if matches!(
+        output.stop_reason,
+        StopReason::Error | StopReason::Pending
+    ) {
+        output.stop_reason = StopReason::Error;
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: StopReason::Error,
+            error: output.clone(),
+        });
+    } else {
+        let _ = tx.send(AssistantMessageEvent::Done {
+            reason: output.stop_reason.clone(),
+            message: output.clone(),
+        });
+    }
 
+    Ok(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        let aborted = options
+            .and_then(|o| o.signal.as_ref())
+            .map(|rx| *rx.borrow())
+            .unwrap_or(false);
+        output.stop_reason = if aborted {
+            StopReason::Aborted
+        } else {
+            StopReason::Error
+        };
+        output.error_message = Some(error.to_string());
+        let _ = tx.send(AssistantMessageEvent::Error {
+            reason: output.stop_reason.clone(),
+            error: output,
+        });
+    }
     Ok(())
 }
 

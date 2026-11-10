@@ -152,6 +152,7 @@ pub async fn handle_command(
 
         // ── Abort ─────────────────────────────────────────────────────────
         RpcCommand::Abort { id } => {
+            session.request_abort();
             session.abort().await;
             Some(rpc_success(id, "abort", None))
         }

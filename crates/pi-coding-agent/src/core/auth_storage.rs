@@ -14,10 +14,19 @@ use pi_agent_core::pi_ai_types::get_env_api_key;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthCredentials {
+    /// v0.87.1 auth.json uses `access` (the older Rust port wrote
+    /// `access_token`, so accept both on read and write the TS name).
+    #[serde(rename = "access", alias = "access_token")]
     pub access_token: String,
+    #[serde(rename = "refresh", alias = "refresh_token")]
     pub refresh_token: Option<String>,
-    pub expires: u128,
+    /// Expiry in milliseconds since the epoch (TS `expires: number`).
+    /// `u128` is not supported by serde_json's `Value`, which made every
+    /// OAuth credential fail to parse/serialize.
+    pub expires: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<Vec<String>>,
 }
 
@@ -612,5 +621,44 @@ mod tests {
         let key = futures::executor::block_on(storage.get_api_key("anthropic", false)).unwrap();
         std::env::remove_var("ANTHROPIC_API_KEY");
         assert_eq!(key, "ambient-key");
+    }
+
+    #[test]
+    fn test_oauth_credentials_use_ts_keys() {
+        let cred: AuthCredential = serde_json::from_value(serde_json::json!({
+            "type": "oauth",
+            "access": "a",
+            "refresh": "r",
+            "expires": 123
+        }))
+        .unwrap();
+        match &cred {
+            AuthCredential::OAuth { credentials } => {
+                assert_eq!(credentials.access_token, "a");
+                assert_eq!(credentials.refresh_token.as_deref(), Some("r"));
+            }
+            _ => panic!("expected oauth"),
+        }
+        let value = serde_json::to_value(&cred).unwrap();
+        assert_eq!(value["access"], "a");
+        assert_eq!(value["refresh"], "r");
+        assert!(value.get("access_token").is_none());
+        assert!(value.get("refresh_token").is_none());
+
+        // Legacy Rust-written entries still load through the aliases.
+        let legacy: AuthCredential = serde_json::from_value(serde_json::json!({
+            "type": "oauth",
+            "access_token": "a2",
+            "refresh_token": "r2",
+            "expires": 456
+        }))
+        .unwrap();
+        match legacy {
+            AuthCredential::OAuth { credentials } => {
+                assert_eq!(credentials.access_token, "a2");
+                assert_eq!(credentials.refresh_token.as_deref(), Some("r2"));
+            }
+            _ => panic!("expected oauth"),
+        }
     }
 }

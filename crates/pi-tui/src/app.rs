@@ -544,9 +544,14 @@ pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes}B")
     } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
+        // JS `toFixed(1)` tie-breaks away from zero; pre-round before the
+        // `{:.1}` formatter (which would round half to even).
+        format!("{:.1}KB", round_one_decimal(bytes as f64 / 1024.0))
     } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+        format!(
+            "{:.1}MB",
+            round_one_decimal(bytes as f64 / (1024.0 * 1024.0))
+        )
     }
 }
 
@@ -2016,9 +2021,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
 
 fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     use crossterm::event::KeyCode;
-    if key.kind != crossterm::event::KeyEventKind::Press
-        && key.kind != crossterm::event::KeyEventKind::Release
-    {
+    // Release events must not be processed as presses (duplicate chars /
+    // Ctrl toggles). The shipped interactive loop filters them, but the public
+    // `app::run` path forwards them.
+    if key.kind != crossterm::event::KeyEventKind::Press {
         return vec![];
     }
     if model.completer.visible {
@@ -2165,14 +2171,14 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                         model.scroll_offset = model.scroll_offset.saturating_sub(1);
                         model.auto_scroll = false;
                     } else {
-                        model.input.move_left();
+                        model.input.move_up();
                     }
                 }
                 KeyCode::Down => {
                     if model.input.value().is_empty() {
                         model.scroll_offset = model.scroll_offset.saturating_add(1);
                     } else {
-                        model.input.move_right();
+                        model.input.move_down();
                     }
                 }
                 KeyCode::Home => {
@@ -2189,11 +2195,15 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
                     model.input.move_end();
                 }
                 KeyCode::PageUp => {
-                    model.scroll_offset = model.scroll_offset.saturating_sub(20);
+                    // v0.87.1 scrolls `viewportHeight - PAGE_SCROLL_OVERLAP`
+                    // (4), not a hardcoded 20 rows.
+                    let page = model.body_area.height.saturating_sub(4).max(1) as usize;
+                    model.scroll_offset = model.scroll_offset.saturating_sub(page);
                     model.auto_scroll = false;
                 }
                 KeyCode::PageDown => {
-                    model.scroll_offset = model.scroll_offset.saturating_add(20);
+                    let page = model.body_area.height.saturating_sub(4).max(1) as usize;
+                    model.scroll_offset = model.scroll_offset.saturating_add(page);
                 }
                 _ => {}
             }
@@ -2270,7 +2280,7 @@ fn completion_context(
     // Tab 强制：非 slash 上下文 → 路径/附件补全（TS forceFileAutocomplete）。
     if force {
         let last = crate::completion::find_last_delimiter(text);
-        let start = last.map_or(0, |i| i + 1);
+        let start = last.unwrap_or(0);
         let token = &text[start..];
         if !token.is_empty() {
             return Some((
@@ -2294,7 +2304,7 @@ fn at_token_prefix(text: &str) -> Option<(String, String)> {
         }
     }
     let last = crate::completion::find_last_delimiter(text);
-    let start = last.map_or(0, |i| i + 1);
+    let start = last.unwrap_or(0);
     if text.as_bytes().get(start) == Some(&b'@') {
         let prefix = text[start..].to_string();
         return Some((prefix.clone(), prefix[1..].to_string()));
@@ -2305,7 +2315,13 @@ fn at_token_prefix(text: &str) -> Option<(String, String)> {
 /// 输入变化后：若补全上下文成立则发起一次异步请求；不成立则关闭弹窗。
 fn completion_request_after_key(model: &mut Model, key: &KeyEvent) -> Option<Cmd> {
     let force = key.code == crossterm::event::KeyCode::Tab;
-    let text = model.input.value().to_string();
+    // v0.87.1 `getSuggestions` uses the text before the cursor, not the whole
+    // buffer (the cursor may be mid-text).
+    let text = {
+        let value = model.input.value();
+        let cursor = model.input.cursor_pos().min(value.len());
+        value[..cursor].to_string()
+    };
     let Some((trigger, prefix, query, command, debounce_ms)) = completion_context(&text, force)
     else {
         if model.completer.visible {
@@ -3293,7 +3309,30 @@ fn bash_call_args(args: &str) -> (BashCommandArg, Option<f64>) {
 /// Visible display width of a text run (CJK wide glyphs count two columns;
 /// tabs are already expanded by the caller). Equivalent to TS `visibleWidth`.
 fn visible_width(text: &str) -> usize {
-    text.chars()
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true).map(grapheme_width).sum()
+}
+
+/// Approximate v0.87.1 `graphemeWidth`: an emoji cluster (emoji base, ZWJ, or
+/// variation selector) occupies two cells as a whole, so a ZWJ family is 2
+/// rather than the sum of its code points (6). Other clusters sum their
+/// code-point widths.
+fn grapheme_width(segment: &str) -> usize {
+    if segment == "\t" {
+        return 3;
+    }
+    let is_emoji_cluster = segment.chars().any(|c| {
+        matches!(
+            c as u32,
+            0x1F300..=0x1FAFF | 0x2600..=0x27BF | 0x1F1E6..=0x1F1FF
+        ) || c == '\u{FE0F}'
+            || c == '\u{200D}'
+    });
+    if is_emoji_cluster {
+        return 2;
+    }
+    segment
+        .chars()
         .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
         .sum()
 }
@@ -3327,7 +3366,8 @@ fn break_long_token(token: &str, width: usize) -> Vec<String> {
 /// - empty input yields no lines (TS `truncateToVisualLines` returns `[]`).
 fn visual_lines(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
-    if text.is_empty() {
+    // v0.87.1 `Text.render` returns no lines when `text.trim() === ""`.
+    if text.trim().is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -3987,6 +4027,8 @@ fn render_bash_tool_block(
 /// Shorten a path for display: `$HOME` → `~` (TS `shortenPath`).
 fn shorten_path(path: &str, cwd: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    // v0.87.1 `shortenPath` uses a raw `startsWith(home)` (not a path-boundary
+    // check), so `/Users/foo2` is shortened under `/Users/foo` upstream too.
     if !home.is_empty() && path.starts_with(&home) {
         return format!("~{}", &path[home.len()..]);
     }
@@ -8361,6 +8403,16 @@ mod tests {
             assert_eq!(a, b, "row {y} residue: live={a:?} fresh={b:?}");
         }
         assert_eq!(g1.len(), g2.len());
+    }
+
+    #[test]
+    fn visible_width_counts_emoji_clusters_as_two() {
+        // A ZWJ family is one grapheme cluster and occupies two cells, not
+        // the sum of its code points (6).
+        assert_eq!(super::visible_width("👨‍👩‍👧"), 2);
+        assert_eq!(super::visible_width("😀"), 2);
+        assert_eq!(super::visible_width("你好"), 4);
+        assert_eq!(super::visible_width("abc"), 3);
     }
 
     /// 用户报告的残留场景：markdown 正文里混排正文 + 代码块，流式增量

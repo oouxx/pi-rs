@@ -84,11 +84,17 @@ impl EditOperations for LocalEditOperations {
     fn access(&self, path: &str) -> crate::core::tools::AsyncOpResult<()> {
         let path = path.to_string();
         Box::pin(async move {
-            // Check if file exists and is readable
-            tokio::fs::metadata(&path)
+            // v0.87.1 `fsAccess(path, R_OK | W_OK)`: opening read+write checks
+            // both permissions without modifying the file. `metadata` alone
+            // only checked existence, so read-only files failed later with a
+            // raw write error instead of EACCES.
+            tokio::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            Ok(())
+                .map(|_| ())
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
     }
 }
@@ -157,6 +163,13 @@ fn edit_parameters_schema() -> serde_json::Value {
 // prepare_arguments
 // ============================================================================
 
+/// Whether `value` is a single `{oldText, newText}` edit object (v0.87.1
+/// `isSingleEditInput`).
+fn is_single_edit_input(value: &serde_json::Value) -> bool {
+    value.get("oldText").and_then(|v| v.as_str()).is_some()
+        && value.get("newText").and_then(|v| v.as_str()).is_some()
+}
+
 /// Prepare edit arguments, handling legacy format (oldText/newText at top level)
 /// and JSON-stringified edits array.
 fn prepare_edit_arguments(params: &serde_json::Value) -> serde_json::Value {
@@ -166,14 +179,21 @@ fn prepare_edit_arguments(params: &serde_json::Value) -> serde_json::Value {
 
     let mut args = params.as_object().unwrap().clone();
 
-    // Some models send edits as a JSON string instead of an array
+    // Some models send edits as a JSON string instead of an array; others
+    // send a single edit object instead of a one-element array (v0.87.1
+    // `prepareEditArguments`).
     if let Some(edits_val) = args.get("edits") {
         if let Some(edits_str) = edits_val.as_str() {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(edits_str) {
                 if parsed.is_array() {
                     args.insert("edits".to_string(), parsed);
+                } else if is_single_edit_input(&parsed) {
+                    args.insert("edits".to_string(), serde_json::Value::Array(vec![parsed]));
                 }
             }
+        } else if is_single_edit_input(edits_val) {
+            let single = edits_val.clone();
+            args.insert("edits".to_string(), serde_json::Value::Array(vec![single]));
         }
     }
 
@@ -392,6 +412,7 @@ e.to_string(),
                                     }).unwrap_or(serde_json::Value::Null),
                                     usage: None,
                                     terminate: None,
+                                    structured_content: None,
                                 }
                             )
                         }

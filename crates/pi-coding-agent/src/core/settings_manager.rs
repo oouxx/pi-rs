@@ -193,6 +193,38 @@ pub enum OutputPad {
     One,
 }
 
+/// v0.87.1 stores `outputPad` as the number `0` or `1`; accept the string
+/// form too for hand-written settings.
+fn serialize_output_pad<S>(value: &Option<OutputPad>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(OutputPad::Zero) => serializer.serialize_u8(0),
+        Some(OutputPad::One) => serializer.serialize_u8(1),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_output_pad<'de, D>(deserializer: D) -> Result<Option<OutputPad>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) if n.as_u64() == Some(0) => {
+            Ok(Some(OutputPad::Zero))
+        }
+        Some(serde_json::Value::Number(n)) if n.as_u64() == Some(1) => {
+            Ok(Some(OutputPad::One))
+        }
+        Some(serde_json::Value::String(s)) if s == "0" => Ok(Some(OutputPad::Zero)),
+        Some(serde_json::Value::String(s)) if s == "1" => Ok(Some(OutputPad::One)),
+        _ => Err(serde::de::Error::custom("outputPad must be 0 or 1")),
+    }
+}
+
 /// Transport setting matching TS `TransportSetting`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TransportSetting {
@@ -300,6 +332,12 @@ pub struct Settings {
     pub double_escape_action: Option<DoubleEscapeAction>,
     pub tree_filter_mode: Option<TreeFilterMode>,
     pub editor_padding_x: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_output_pad",
+        deserialize_with = "deserialize_output_pad"
+    )]
     pub output_pad: Option<OutputPad>,
     pub autocomplete_max_visible: Option<u32>,
     pub show_hardware_cursor: Option<bool>,
@@ -2689,5 +2727,21 @@ mod tests {
 
         let errors = mgr.drain_errors();
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_output_pad_accepts_number_and_string() {
+        // v0.87.1 stores `outputPad` as the number 0/1.
+        let numeric: Settings =
+            serde_json::from_value(serde_json::json!({"outputPad": 0})).unwrap();
+        assert_eq!(numeric.output_pad, Some(OutputPad::Zero));
+
+        // Hand-written string form still loads.
+        let string: Settings =
+            serde_json::from_value(serde_json::json!({"outputPad": "1"})).unwrap();
+        assert_eq!(string.output_pad, Some(OutputPad::One));
+
+        let serialized = serde_json::to_value(&numeric).unwrap();
+        assert_eq!(serialized["outputPad"], serde_json::json!(0));
     }
 }

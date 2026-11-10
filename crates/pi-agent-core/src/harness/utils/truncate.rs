@@ -202,17 +202,14 @@ fn truncate_string_to_bytes_from_end(s: &str, max_bytes: usize) -> String {
 
 pub fn truncate_line(line: &str, max_chars: Option<usize>) -> (String, bool) {
     let max = max_chars.unwrap_or(GREP_MAX_LINE_LENGTH);
-    // Use char_indices to safely find the byte boundary of the max-th character.
-    // This avoids panicking on multi-byte UTF-8 characters (e.g. CJK, emoji).
-    let byte_pos = line
-        .char_indices()
-        .nth(max)
-        .map(|(pos, _)| pos)
-        .unwrap_or(line.len());
-    if byte_pos >= line.len() {
+    // v0.87.1 counts UTF-16 code units (`line.length`), not scalar values.
+    // An astral character straddling the cut is dropped whole because Rust
+    // cannot represent the lone surrogate that JS would produce.
+    if pi_ai::utils::text::utf16_len(line) <= max {
         return (line.to_string(), false);
     }
-    (format!("{}... [truncated]", &line[..byte_pos]), true)
+    let head = pi_ai::utils::text::truncate_utf16(line, max);
+    (format!("{head}... [truncated]"), true)
 }
 
 pub struct TruncationOptions {

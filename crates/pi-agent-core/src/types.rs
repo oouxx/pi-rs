@@ -181,6 +181,10 @@ pub struct AgentToolResult<T: Clone + Send + Sync + 'static> {
     pub usage: Option<Usage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
+    /// Provider/programmatic structured result (TS `structuredContent`),
+    /// distinct from the model-facing `content` blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<serde_json::Value>,
 }
 
 /// Error wrapper for a tool that failed but still has a structured result to
@@ -419,6 +423,13 @@ pub struct AfterToolCallResult {
     pub details: Option<serde_json::Value>,
     pub is_error: Option<bool>,
     pub terminate: Option<bool>,
+    /// Replace the tool result's usage (v0.87.1
+    /// `afterResult.usage ?? result.usage`).
+    pub usage: Option<Usage>,
+    /// Replace the tool result's structured content (v0.87.1
+    /// `afterResult.structuredContent`); replacing `content` without this
+    /// clears the old structured content.
+    pub structured_content: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]

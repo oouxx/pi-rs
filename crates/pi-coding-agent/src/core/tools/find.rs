@@ -295,6 +295,7 @@ fn emit_results(
         details: serde_json::to_value(details).unwrap_or(serde_json::Value::Null),
         usage: None,
         terminate: None,
+        structured_content: None,
     }
 }
 
@@ -304,6 +305,7 @@ fn text_result(text: &str) -> AgentToolResult<serde_json::Value> {
         details: serde_json::Value::Null,
         usage: None,
         terminate: None,
+        structured_content: None,
     }
 }
 

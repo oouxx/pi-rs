@@ -3,6 +3,7 @@ pub mod agent_loop;
 pub mod harness;
 pub mod pi_ai_types;
 pub mod proxy;
+pub mod tool_validation;
 pub mod types;
 
 /// Re-export pi-ai so downstream crates can access it without a direct dependency.

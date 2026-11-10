@@ -192,6 +192,7 @@ pub fn create_write_tool(
                                 details: serde_json::Value::Null,
                                 usage: None,
                                 terminate: None,
+                                structured_content: None,
                             })
                         }
                     })

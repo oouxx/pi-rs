@@ -149,6 +149,8 @@ pub enum StopReason {
     ToolUse,
     Error,
     Aborted,
+    /// Deferred response (v0.87.1 `StopReason = ... | "deferred"`).
+    Deferred,
 }
 
 // ============================================================================
@@ -496,6 +498,13 @@ pub struct OpenAICompletionsCompat {
     pub chat_template_args: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_thinking_token_budget: Option<bool>,
+    /// Field name used for the vLLM thinking budget (TS
+    /// `thinkingTokenBudgetField`); defaults to `thinking_token_budget`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_token_budget_field: Option<String>,
+    /// vLLM scheduler priority (TS `vllmPriority`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vllm_priority: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_openai_grammar_tools: Option<bool>,
     /// Whether the model accepts mid-conversation system messages, and whether

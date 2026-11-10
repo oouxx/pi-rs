@@ -14,7 +14,7 @@ fn re(pattern: &str) -> Regex {
 
 static OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
     vec![
-        re(r"prompt is too long"),
+        re(r"prompt (?:is )?too long"),
         re(r"request_too_large"),
         re(r"input is too long for requested model"),
         re(r"exceeds the context window"),
@@ -33,14 +33,20 @@ static OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock:
         re(r"context window exceeds limit"),
         re(r"exceeded model token limit"),
         re(r"too large for model with \d+ maximum context length"),
+        re(r"prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?"),
         re(r"model_context_window_exceeded"),
         re(r"prompt too long; exceeded (?:max )?context length"),
+        re(r"range of input length should be"),
         re(r"context[_ ]length[_ ]exceeded"),
         re(r"too many tokens"),
         re(r"token limit exceeded"),
-        re(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)"),
     ]
 });
+
+/// Cerebras reports a bodyless 400/413 as a bare status line; v0.87.1 only
+/// applies this pattern when `provider === "cerebras"`.
+static CEREBRAS_BODYLESS_OVERFLOW_PATTERN: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| re(r"^4(?:00|13)\s*(?:status code)?\s*\(no body\)"));
 
 static NON_OVERFLOW_PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
     vec![
@@ -61,8 +67,15 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     if message.stop_reason == StopReason::Error {
         if let Some(ref error_msg) = message.error_message {
             let is_non_overflow = NON_OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error_msg));
-            if !is_non_overflow && OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error_msg)) {
-                return true;
+            if !is_non_overflow {
+                if OVERFLOW_PATTERNS.iter().any(|p| p.is_match(error_msg)) {
+                    return true;
+                }
+                if message.provider == "cerebras"
+                    && CEREBRAS_BODYLESS_OVERFLOW_PATTERN.is_match(error_msg)
+                {
+                    return true;
+                }
             }
         }
     }
@@ -93,6 +106,20 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
 /// Get a copy of the overflow patterns for testing.
 pub fn get_overflow_patterns() -> Vec<Regex> {
     OVERFLOW_PATTERNS.clone()
+}
+
+/// Whether a `length` stop ended below the caller/model's intended output
+/// limit (v0.87.1 `isRecoverableLength`). Such responses may be caused by
+/// context pressure or provider-side truncation, so callers can make one
+/// bounded compact-and-retry attempt.
+///
+/// `desired_max_output` must be the original limit before context-based
+/// clamping.
+#[must_use]
+pub fn is_recoverable_length(message: &AssistantMessage, desired_max_output: u64) -> bool {
+    message.stop_reason == StopReason::Length
+        && desired_max_output > 0
+        && message.usage.output < desired_max_output
 }
 
 // ============================================================================
@@ -254,8 +281,30 @@ mod tests {
 
     #[test]
     fn test_cerebras_overflow() {
-        let msg = make_error_msg("400 status code (no body)");
+        let mut msg = make_error_msg("400 status code (no body)");
+        msg.provider = "cerebras".into();
         assert!(is_context_overflow(&msg, None));
+
+        // The bodyless pattern is cerebras-only; another provider's bare 400
+        // must not be treated as overflow.
+        let msg = make_error_msg("400 status code (no body)");
+        assert!(!is_context_overflow(&msg, None));
+    }
+
+    #[test]
+    fn test_zai_prompt_too_long() {
+        let msg = make_error_msg(r#"{"code":"1261","message":"Prompt too long"}"#);
+        assert!(is_context_overflow(&msg, None));
+    }
+
+    #[test]
+    fn test_ds4_and_dashscope_patterns() {
+        let ds4 = make_error_msg(
+            "Prompt has 200000 tokens, but the configured context size is 128000 tokens",
+        );
+        assert!(is_context_overflow(&ds4, None));
+        let dashscope = make_error_msg("Range of input length should be [1, 128000]");
+        assert!(is_context_overflow(&dashscope, None));
     }
 
     #[test]
@@ -319,6 +368,19 @@ mod tests {
     fn test_generic_too_many_tokens() {
         let msg = make_error_msg("too many tokens in the prompt");
         assert!(is_context_overflow(&msg, None));
+    }
+
+    #[test]
+    fn test_recoverable_length() {
+        let length = make_success_msg(100, 50, StopReason::Length);
+        assert!(is_recoverable_length(&length, 1000));
+        // The output already reached the intended limit.
+        assert!(!is_recoverable_length(&length, 50));
+        // A normal stop is never a recoverable length.
+        assert!(!is_recoverable_length(
+            &make_success_msg(100, 50, StopReason::Stop),
+            1000
+        ));
     }
 
     #[test]

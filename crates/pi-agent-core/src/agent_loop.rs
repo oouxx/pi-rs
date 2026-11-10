@@ -59,6 +59,7 @@ fn create_error_tool_result(message: &str) -> AgentToolResult<serde_json::Value>
         details: serde_json::Value::Object(Default::default()),
         usage: None,
         terminate: None,
+        structured_content: None,
     }
 }
 
@@ -69,105 +70,7 @@ fn should_terminate_tool_batch(finalized_calls: &[FinalizedToolCallOutcome]) -> 
             .all(|f| f.result.terminate == Some(true))
 }
 
-/// Whether a JSON schema accepts an explicit `null` value (TS
-/// `schemaAllowsNull`): `type: "null"` / union containing null, `const:
-/// null`, `enum` containing null, or an `anyOf` variant that allows null.
-fn schema_allows_null(schema: &serde_json::Value) -> bool {
-    if let Some(t) = schema.get("type") {
-        if t == "null" {
-            return true;
-        }
-        if let Some(arr) = t.as_array() {
-            if arr.iter().any(|v| v == "null") {
-                return true;
-            }
-        }
-    }
-    if schema.get("const") == Some(&serde_json::Value::Null) {
-        return true;
-    }
-    if let Some(enum_) = schema.get("enum").and_then(|v| v.as_array()) {
-        if enum_.iter().any(|v| v.is_null()) {
-            return true;
-        }
-    }
-    if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
-        if any_of.iter().any(schema_allows_null) {
-            return true;
-        }
-    }
-    false
-}
-
-/// TS 0.84.2 `normalizeOptionalNulls`: `null` values for optional
-/// non-nullable tool arguments are treated as omitted — removed recursively
-/// (objects and array items) before validation/execution, so a provider that
-/// emits `null` for an absent optional argument never fails a strict schema.
-fn normalize_optional_nulls(value: &mut serde_json::Value, schema: &serde_json::Value) {
-    match value {
-        serde_json::Value::Array(items) => {
-            if let Some(item_schema) = schema.get("items") {
-                for item in items.iter_mut() {
-                    normalize_optional_nulls(item, item_schema);
-                }
-            }
-        }
-        serde_json::Value::Object(obj) => {
-            let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
-                return;
-            };
-            let required: std::collections::HashSet<&str> = schema
-                .get("required")
-                .and_then(|r| r.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<std::collections::HashSet<_>>()
-                })
-                .unwrap_or_default();
-            let keys: Vec<String> = obj.keys().cloned().collect();
-            for key in keys {
-                let Some(prop_schema) = properties.get(&key) else {
-                    continue;
-                };
-                if obj.get(&key) == Some(&serde_json::Value::Null)
-                    && !required.contains(key.as_str())
-                    && !schema_allows_null(prop_schema)
-                {
-                    obj.remove(&key);
-                } else if let Some(child) = obj.get_mut(&key) {
-                    normalize_optional_nulls(child, prop_schema);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn validate_tool_arguments(
-    tool_schema: &serde_json::Value,
-    args: &serde_json::Value,
-) -> serde_json::Value {
-    if tool_schema.is_null() {
-        return args.clone();
-    }
-    let mut filtered_args = args.clone();
-    // TS 0.84.2: `null` for optional non-nullable args counts as omitted.
-    normalize_optional_nulls(&mut filtered_args, tool_schema);
-    if let Some(properties) = tool_schema.get("properties") {
-        let mut filtered = serde_json::Map::new();
-        if let Some(obj) = filtered_args.as_object() {
-            for (key, value) in obj {
-                if properties.get(key).is_some() {
-                    filtered.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        serde_json::Value::Object(filtered)
-    } else {
-        filtered_args
-    }
-}
+use crate::tool_validation::validate_tool_arguments;
 
 fn prepare_tool_call_arguments(
     tool: &crate::types::DynTool,
@@ -212,8 +115,25 @@ async fn prepare_tool_call(
     };
 
     let prepared_tool_call = prepare_tool_call_arguments(tool, tool_call);
-    let validated_args =
-        validate_tool_arguments(&tool.parameters_schema, &prepared_tool_call.arguments);
+    let validated_args = match validate_tool_arguments(
+        &tool.parameters_schema,
+        &prepared_tool_call.arguments,
+    ) {
+        Ok(args) => args,
+        Err(error) => {
+            // Match v0.87.1: a schema failure becomes an error tool result
+            // instead of reaching the tool implementation.
+            return PreparedOrImmediate::Immediate {
+                result: create_error_tool_result(&format!(
+                    "Validation failed for tool \"{}\":\n  - {}\n\nReceived arguments:\n{}",
+                    tool_call.name,
+                    error,
+                    serde_json::to_string_pretty(&prepared_tool_call.arguments).unwrap_or_default()
+                )),
+                is_error: true,
+            };
+        }
+    };
 
     if let Some(before_fn) = before_tool_call {
         let ctx = BeforeToolCallContext {
@@ -361,6 +281,7 @@ async fn finalize_executed_tool_call(
             context: current_context.clone(),
         };
         if let Some(after_result) = after_fn(ctx, signal.clone()).await {
+            let content_replaced = after_result.content.is_some();
             if let Some(content) = after_result.content {
                 result.content = content;
             }
@@ -372,6 +293,16 @@ async fn finalize_executed_tool_call(
             }
             if let Some(terminate) = after_result.terminate {
                 result.terminate = Some(terminate);
+            }
+            if let Some(usage) = after_result.usage {
+                result.usage = Some(usage);
+            }
+            // TS: replacing `content` without new structured content
+            // invalidates the old structured result.
+            if let Some(structured) = after_result.structured_content {
+                result.structured_content = Some(structured);
+            } else if content_replaced {
+                result.structured_content = None;
             }
         }
     }
@@ -1437,7 +1368,9 @@ async fn run_loop(
                             config_model = m;
                         }
                         if let Some(tl) = update.thinking_level {
-                            config_reasoning = Some(tl);
+                            // v0.87.1 maps `"off"` to `undefined` (no
+                            // reasoning parameter) rather than forwarding it.
+                            config_reasoning = if tl == "off" { None } else { Some(tl) };
                         }
                     }
                 }
@@ -1726,6 +1659,7 @@ mod tests {
                 details: serde_json::Value::Null,
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let context = AgentContext {
@@ -2242,6 +2176,7 @@ mod tests {
                     details: serde_json::json!({}),
                     usage: None,
                     terminate: Some(true),
+                    structured_content: None,
                 },
                 is_error: false,
             },
@@ -2252,6 +2187,7 @@ mod tests {
                     details: serde_json::json!({}),
                     usage: None,
                     terminate: Some(true),
+                    structured_content: None,
                 },
                 is_error: false,
             },
@@ -2269,6 +2205,7 @@ mod tests {
                     details: serde_json::json!({}),
                     usage: None,
                     terminate: Some(true),
+                    structured_content: None,
                 },
                 is_error: false,
             },
@@ -2279,6 +2216,7 @@ mod tests {
                     details: serde_json::json!({}),
                     usage: None,
                     terminate: None,
+                    structured_content: None,
                 },
                 is_error: false,
             },
@@ -2293,7 +2231,7 @@ mod tests {
     fn test_validate_null_schema() {
         let args = serde_json::json!({"key": "value", "extra": 42});
         assert_eq!(
-            validate_tool_arguments(&serde_json::Value::Null, &args),
+            validate_tool_arguments(&serde_json::Value::Null, &args).unwrap(),
             args
         );
     }
@@ -2306,7 +2244,7 @@ mod tests {
             }
         });
         let args = serde_json::json!({"name": "foo", "extra": "bar"});
-        let filtered = validate_tool_arguments(&schema, &args);
+        let filtered = validate_tool_arguments(&schema, &args).unwrap();
         assert_eq!(filtered, serde_json::json!({"name": "foo"}));
         assert!(filtered.get("extra").is_none());
     }
@@ -2321,7 +2259,7 @@ mod tests {
         });
         let args = serde_json::json!({"a": 1, "b": 2});
         assert_eq!(
-            validate_tool_arguments(&schema, &args),
+            validate_tool_arguments(&schema, &args).unwrap(),
             serde_json::json!({"a": 1, "b": 2})
         );
     }
@@ -2330,18 +2268,17 @@ mod tests {
     fn test_validate_non_object_args() {
         let schema = serde_json::json!({"properties": {"x": {}}});
         let args = serde_json::json!("string_arg");
-        // When schema has properties but args is not an object, returns empty object
-        assert_eq!(
-            validate_tool_arguments(&schema, &args),
-            serde_json::json!({})
-        );
+        // v0.87.1 rejects non-object arguments for an object schema instead
+        // of silently turning them into `{}`.
+        let error = validate_tool_arguments(&schema, &args).unwrap_err();
+        assert!(error.contains("expected object"), "{error}");
     }
 
     #[test]
     fn test_validate_schema_no_properties() {
         let schema = serde_json::json!({"type": "object"});
         let args = serde_json::json!({"keep": "me"});
-        assert_eq!(validate_tool_arguments(&schema, &args), args);
+        assert_eq!(validate_tool_arguments(&schema, &args).unwrap(), args);
     }
 
     // ============================================================
@@ -2358,6 +2295,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let call = dummy_tool_call("1", "test", serde_json::json!({"a": 1}));
@@ -2382,6 +2320,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let call = dummy_tool_call("1", "test", serde_json::json!({"input": "hello"}));
@@ -2476,6 +2415,7 @@ mod tests {
                 details: serde_json::json!({"ok": true}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             },
             is_error: false,
         };
@@ -2508,6 +2448,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             },
             is_error: true,
         };
@@ -2538,6 +2479,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: Some(usage.clone()),
                 terminate: None,
+                structured_content: None,
             },
             is_error: false,
         };
@@ -2579,6 +2521,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -2626,6 +2569,7 @@ mod tests {
                 details: serde_json::Value::Null,
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         )]);
         let before_fn: BeforeToolCallFn = Arc::new(|_ctx, _signal| {
@@ -2672,6 +2616,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -2709,6 +2654,7 @@ mod tests {
             details: serde_json::json!({"status": "ok"}),
             usage: None,
             terminate: Some(false),
+            structured_content: None,
         });
         let tool = dummy_agent_tool("t1", serde_json::json!({}), None, execute_result);
         let call = dummy_tool_call("1", "t1", serde_json::json!({}));
@@ -2763,6 +2709,7 @@ mod tests {
             details: serde_json::json!({"mode": "single", "exitCode": 1}),
             usage: None,
             terminate: Some(true),
+            structured_content: None,
         };
         let execute_result: Result<
             AgentToolResult<serde_json::Value>,
@@ -2808,6 +2755,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             },
             is_error: false,
         };
@@ -2837,6 +2785,7 @@ mod tests {
                 details: serde_json::json!({"original": true}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             },
             is_error: false,
         };
@@ -2851,6 +2800,8 @@ mod tests {
                     details: Some(serde_json::json!({"modified": true})),
                     is_error: Some(true),
                     terminate: Some(true),
+                    usage: None,
+                    structured_content: None,
                 })
             })
         });
@@ -2898,6 +2849,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -2945,6 +2897,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: Some(true),
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -2979,6 +2932,7 @@ mod tests {
             details: serde_json::json!({}),
             usage: None,
             terminate: None,
+            structured_content: None,
         });
 
         let err_tool = dummy_agent_tool("err", serde_json::json!({}), None, err_result);
@@ -3029,6 +2983,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let tool_b = dummy_agent_tool(
@@ -3043,6 +2998,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool_a, tool_b]);
@@ -3083,6 +3039,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![found_tool]);
@@ -3159,6 +3116,7 @@ mod tests {
                             details: serde_json::json!({}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         })
                     })
                 }),
@@ -3227,6 +3185,7 @@ mod tests {
                             details: serde_json::json!({}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         })
                     })
                 }),
@@ -3293,6 +3252,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -3325,6 +3285,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         );
         let ctx = dummy_context(vec![tool]);
@@ -3366,6 +3327,7 @@ mod tests {
                         details: serde_json::json!({}),
                         usage: None,
                         terminate: None,
+                        structured_content: None,
                     })
                 })
             }),
@@ -3688,6 +3650,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         )]);
 
@@ -3802,6 +3765,7 @@ mod tests {
                             details: serde_json::json!({}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         }),
                     ),
                     dummy_agent_tool(
@@ -3813,6 +3777,7 @@ mod tests {
                             details: serde_json::json!({}),
                             usage: None,
                             terminate: None,
+                            structured_content: None,
                         }),
                     ),
                 ]);
@@ -3837,6 +3802,7 @@ mod tests {
                 details: serde_json::json!({}),
                 usage: None,
                 terminate: None,
+                structured_content: None,
             }),
         )]);
 

@@ -5,7 +5,8 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use pi_mcp::{CallToolResult, LlmContent, Tool as McpTool};
+use base64::Engine as _;
+use pi_mcp::{CallToolResult, ContentBlock, LlmContent, Tool as McpTool};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -135,10 +136,13 @@ fn truncate_middle(text: &str, max_bytes: usize) -> Option<(String, usize, usize
     while end_start < text.len() && !text.is_char_boundary(end_start) {
         end_start += 1;
     }
-    let total_lines = text.lines().count();
+    // v1.5.0 `truncateMiddle`: `…N chars truncated…` with the scalar count of
+    // the removed middle, and `split("\n")` line counting.
+    let removed_chars = text[start_end..end_start].chars().count();
+    let total_lines = text.split('\n').count() - usize::from(text.ends_with('\n'));
     Some((
         format!(
-            "{}\n... (truncated) ...\n{}",
+            "{}…{removed_chars} chars truncated…{}",
             &text[..start_end],
             &text[end_start..]
         ),
@@ -193,12 +197,169 @@ pub fn limit_content(content: Vec<Value>) -> (Vec<Value>, Option<String>) {
     (limited, full_output)
 }
 
-/// Convert an MCP `CallToolResult` into a pi `ToolCallOutput`.
-pub fn convert_mcp_result(server: &str, tool: &str, result: CallToolResult) -> pi_extension_api::ToolCallOutput {
-    let mut content: Vec<Value> = pi_mcp::to_llm_content(&result)
+/// Whether a MIME type is text-like (v1.5.0 `isTextMimeType`).
+fn is_text_mime(mime: Option<&str>) -> bool {
+    let Some(mime) = mime else {
+        return false;
+    };
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
+    base.starts_with("text/")
+        || matches!(
+            base.as_str(),
+            "application/json"
+                | "application/xml"
+                | "application/javascript"
+                | "application/x-yaml"
+                | "application/yaml"
+                | "application/toml"
+        )
+}
+
+/// Extension (including the dot) from a resource URI, when present.
+fn extension_of(uri: &str) -> String {
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default()
+}
+
+/// Save a binary resource to an owner-only temp file.
+fn save_binary_output(data: &[u8], extension: &str) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!(
+        "pi-mcp-{}{extension}",
+        uuid::Uuid::new_v4()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("could not save binary resource: {error}"))?;
+    file.write_all(data)
+        .map_err(|error| format!("could not save binary resource: {error}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Convert one MCP content block (v1.5.0 `blockToContent`): resource links get
+/// a readable description, text resources become text, image resources become
+/// images, and other binary resources are decoded or saved to a temp file.
+fn block_to_content(server: &str, block: &ContentBlock) -> Vec<Value> {
+    match block {
+        ContentBlock::ResourceLink {
+            uri,
+            name,
+            title,
+            description,
+            mime_type,
+            size,
+            ..
+        } => {
+            let mut details = Vec::new();
+            if let Some(mime) = mime_type {
+                details.push(mime.clone());
+            }
+            if let Some(size) = size {
+                details.push(crate::core::tools::truncate::format_size(*size as usize));
+            }
+            let details = if details.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", details.join(", "))
+            };
+            let description = description
+                .as_ref()
+                .map(|description| format!(": {description}"))
+                .unwrap_or_default();
+            let read = format!(
+                ". Read it with {} (server \"{server}\")",
+                crate::core::mcp_servers::READ_MCP_RESOURCE_TOOL
+            );
+            vec![json!({
+                "type": "text",
+                "text": format!(
+                    "[Resource {uri} \"{}\"{details}{description}{read}]",
+                    title.as_deref().unwrap_or(name)
+                )
+            })]
+        }
+        ContentBlock::Resource { resource, .. } => {
+            if let Some(text) = resource.text() {
+                return vec![json!({"type": "text", "text": text})];
+            }
+            let mime = resource.mime_type();
+            if mime.is_some_and(|mime| mime.starts_with("image/")) {
+                return pi_mcp::to_llm_content(&CallToolResult {
+                    content: vec![block.clone()],
+                    ..Default::default()
+                })
+                .into_iter()
+                .map(llm_content_to_json)
+                .collect();
+            }
+            let blob = resource.blob().unwrap_or_default();
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(blob)
+                .unwrap_or_default();
+            if is_text_mime(mime) {
+                return vec![json!({
+                    "type": "text",
+                    "text": String::from_utf8_lossy(&data)
+                })];
+            }
+            let kind = format!(
+                "{}, {}",
+                mime.unwrap_or("unknown type"),
+                crate::core::tools::truncate::format_size(data.len())
+            );
+            let uri = resource.uri();
+            match save_binary_output(&data, &extension_of(uri)) {
+                Ok(path) => vec![json!({
+                    "type": "text",
+                    "text": format!("[Binary resource {uri} ({kind}) saved to {path}]")
+                })],
+                Err(error) => vec![json!({
+                    "type": "text",
+                    "text": format!("[Binary resource {uri} ({kind}) could not be saved: {error}]")
+                })],
+            }
+        }
+        _ => pi_mcp::to_llm_content(&CallToolResult {
+            content: vec![block.clone()],
+            ..Default::default()
+        })
         .into_iter()
         .map(llm_content_to_json)
+        .collect(),
+    }
+}
+
+/// Convert an MCP `CallToolResult` into a pi `ToolCallOutput`.
+pub fn convert_mcp_result(server: &str, tool: &str, result: CallToolResult) -> pi_extension_api::ToolCallOutput {
+    let mut content: Vec<Value> = result
+        .content
+        .iter()
+        .flat_map(|block| block_to_content(server, block))
         .collect();
+    if content.is_empty() {
+        if let Some(structured) = &result.structured_content {
+            content.push(json!({
+                "type": "text",
+                "text": serde_json::to_string_pretty(structured)
+                    .unwrap_or_else(|_| "null".to_string())
+            }));
+        }
+    }
     if result.is_error && text_of(&content).is_empty() {
         content.push(llm_content_to_json(LlmContent::Text {
             text: format!("MCP tool {server}/{tool} returned an error"),

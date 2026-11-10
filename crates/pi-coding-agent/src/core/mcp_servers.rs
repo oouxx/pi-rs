@@ -704,13 +704,15 @@ const MAX_SERVER_DESCRIPTION_CHARS: usize = 250;
 pub const MAX_SERVERS_SECTION_CHARS: usize = 4096;
 
 fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+    // v1.5.0 measures UTF-16 code units (`text.length`) and uses
+    // `sliceHead(text, max - 1)`.
+    if pi_ai::utils::text::utf16_len(text) <= max {
         return text.to_string();
     }
     if max <= 1 {
         return String::new();
     }
-    let mut truncated: String = text.chars().take(max - 1).collect();
+    let mut truncated = pi_ai::utils::text::truncate_utf16(text, max - 1).to_string();
     truncated = truncated.trim_end().to_string();
     truncated.push('…');
     truncated
@@ -740,18 +742,15 @@ pub fn render_mcp_servers_section(
         .collect();
     let size = |kept: usize| -> usize {
         let omitted = listed.len().saturating_sub(kept);
-        let mut length = intro.chars().count() + 1;
+        let mut length = pi_ai::utils::text::utf16_len(intro) + 1;
         for head in heads.iter().take(kept) {
-            length += head.chars().count() + 1;
+            length += pi_ai::utils::text::utf16_len(head) + 1;
         }
         if omitted > 0 {
-            length += format!(
+            length += pi_ai::utils::text::utf16_len(&format!(
                 "- … {omitted} more server{}; find their tools with `tool_search`",
                 if omitted == 1 { "" } else { "s" }
-            )
-            .chars()
-            .count()
-                + 1;
+            )) + 1;
         }
         length
     };

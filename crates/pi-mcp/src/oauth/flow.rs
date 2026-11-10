@@ -792,9 +792,19 @@ pub async fn authorize_mcp(
     }
 }
 
+/// Result shared by every concurrent 401 waiter. A `watch` channel stores the
+/// value, so a follower that arrives after the leader finished still observes
+/// the outcome (the old `Notify` lost the wakeup).
+#[derive(Debug, Clone)]
+enum RefreshOutcome {
+    Ok,
+    AuthorizationRequired,
+    Failed(String),
+}
+
 struct OAuthAdapter {
     provider: Arc<dyn OAuthClientProvider>,
-    in_flight: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    in_flight: Mutex<Option<tokio::sync::watch::Receiver<Option<RefreshOutcome>>>>,
 }
 
 #[async_trait]
@@ -813,21 +823,49 @@ impl AuthProvider for OAuthAdapter {
             }
         }
 
-        let (leader, gate) = {
+        let (leader, mut follower_rx, leader_tx) = {
             let mut slot = self.in_flight.lock().await;
             match slot.as_ref() {
-                Some(gate) => (false, Arc::clone(gate)),
+                Some(rx) => (false, Some(rx.clone()), None),
                 None => {
-                    let gate = Arc::new(tokio::sync::Notify::new());
-                    *slot = Some(Arc::clone(&gate));
-                    (true, gate)
+                    let (tx, rx) = tokio::sync::watch::channel::<Option<RefreshOutcome>>(None);
+                    *slot = Some(rx.clone());
+                    (true, None, Some(tx))
                 }
             }
         };
         if !leader {
-            gate.notified().await;
-            return Ok(());
+            let mut rx = match follower_rx.take() {
+                Some(rx) => rx,
+                None => {
+                    return Err(McpError::OAuth(Box::new(OAuthError::Message(
+                        "OAuth refresh state missing".to_string(),
+                    ))))
+                }
+            };
+            let outcome = loop {
+                if let Some(outcome) = rx.borrow().clone() {
+                    break outcome;
+                }
+                if rx.changed().await.is_err() {
+                    break RefreshOutcome::Failed("OAuth refresh cancelled".to_string());
+                }
+            };
+            return match outcome {
+                RefreshOutcome::Ok => Ok(()),
+                RefreshOutcome::AuthorizationRequired => {
+                    Err(McpError::OAuth(Box::new(OAuthError::AuthorizationRequired)))
+                }
+                RefreshOutcome::Failed(message) => {
+                    Err(McpError::OAuth(Box::new(OAuthError::Message(message))))
+                }
+            };
         }
+        let Some(leader_tx) = leader_tx else {
+            return Err(McpError::OAuth(Box::new(OAuthError::Message(
+                "OAuth refresh leader state missing".to_string(),
+            ))));
+        };
 
         let result = async {
             let granted = if insufficient_scope {
@@ -862,11 +900,21 @@ impl AuthProvider for OAuthAdapter {
         }
         .await;
 
+        // Publish the outcome to every follower before clearing the slot.
+        let outcome = match &result {
+            Ok(()) => RefreshOutcome::Ok,
+            Err(McpError::OAuth(error))
+                if matches!(error.as_ref(), OAuthError::AuthorizationRequired) =>
+            {
+                RefreshOutcome::AuthorizationRequired
+            }
+            Err(error) => RefreshOutcome::Failed(error.to_string()),
+        };
+        let _ = leader_tx.send(Some(outcome));
         {
             let mut slot = self.in_flight.lock().await;
             *slot = None;
         }
-        gate.notify_waiters();
         result
     }
 }

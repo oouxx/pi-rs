@@ -183,8 +183,10 @@ pub enum ContentBlock {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
-    /// Content blocks.
-    #[serde(default)]
+    /// Content blocks. Unknown `type`s degrade to a text placeholder instead
+    /// of failing the whole `tools/call` result (v1.5.0 `blockToLlmContent`
+    /// default branch).
+    #[serde(default, deserialize_with = "deserialize_content_blocks")]
     pub content: Vec<ContentBlock>,
     /// Structured result; may be any JSON value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,6 +214,28 @@ pub enum LlmContent {
         /// MIME type.
         mime_type: String,
     },
+}
+
+fn deserialize_content_blocks<'de, D>(deserializer: D) -> Result<Vec<ContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(|value| {
+            let type_name = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            serde_json::from_value::<ContentBlock>(value).unwrap_or_else(|_| ContentBlock::Text {
+                text: format!("[unsupported MCP content {type_name}]"),
+                annotations: None,
+                meta: None,
+            })
+        })
+        .collect())
 }
 
 fn block_to_llm_content(block: &ContentBlock) -> LlmContent {
@@ -302,6 +326,23 @@ mod tests {
                 mime_type: "image/png".to_string()
             }
         );
+    }
+
+    #[test]
+    fn unknown_content_type_degrades_to_text() {
+        let result: CallToolResult = serde_json::from_value(json!({
+            "content": [
+                {"type": "future_block", "payload": 1},
+                {"type": "text", "text": "ok"}
+            ]
+        }))
+        .unwrap();
+        let content = to_llm_content(&result);
+        assert!(matches!(
+            &content[0],
+            LlmContent::Text { text } if text == "[unsupported MCP content future_block]"
+        ));
+        assert!(matches!(&content[1], LlmContent::Text { text } if text == "ok"));
     }
 
     #[test]

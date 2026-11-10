@@ -314,12 +314,11 @@ impl StreamableHttpTransport {
             return Err(McpError::SessionExpired { body });
         }
         let text = body.trim();
-        let snippet = if text.chars().count() > ERROR_MESSAGE_BODY_CHARS {
+        // v1.5.0 measures/slices UTF-16 code units (`text.length`/`slice`).
+        let snippet = if utf16_len(text) > ERROR_MESSAGE_BODY_CHARS {
             format!(
                 "{}...",
-                text.chars()
-                    .take(ERROR_MESSAGE_BODY_CHARS - 3)
-                    .collect::<String>()
+                truncate_utf16(text, ERROR_MESSAGE_BODY_CHARS - 3)
             )
         } else {
             text.to_string()
@@ -701,7 +700,22 @@ impl McpTransport for StreamableHttpTransport {
         let content_type = content_type(&response);
         match content_type.as_deref() {
             Some("application/json") => {
-                let body: serde_json::Value = response.json().await?;
+                // v1.5.0 `readBodyText(response, maxBytes)` bounds the JSON
+                // body; `response.json()` would buffer an unbounded payload.
+                let max = self.inner.options.max_message_bytes;
+                let mut stream = response.bytes_stream();
+                let mut body = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    if body.len() + chunk.len() > max {
+                        return Err(McpError::Transport(format!(
+                            "MCP JSON response exceeds {max} bytes"
+                        )));
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                let body: serde_json::Value = serde_json::from_slice(&body)
+                    .map_err(|e| McpError::Transport(format!("invalid MCP JSON response: {e}")))?;
                 let values = match body {
                     serde_json::Value::Array(values) => values,
                     value => vec![value],
@@ -911,4 +925,23 @@ impl SseParser {
         self.data_lines.clear();
         self.data_bytes = 0;
     }
+}
+
+/// JS `String.prototype.length` (UTF-16 code units).
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// JS `String.prototype.slice(0, max_units)` without splitting a surrogate
+/// pair (Rust `String` cannot represent a lone surrogate).
+fn truncate_utf16(text: &str, max_units: usize) -> &str {
+    let mut units = 0;
+    for (index, ch) in text.char_indices() {
+        let width = ch.len_utf16();
+        if units + width > max_units {
+            return &text[..index];
+        }
+        units += width;
+    }
+    text
 }

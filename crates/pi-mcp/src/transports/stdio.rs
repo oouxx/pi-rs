@@ -368,6 +368,13 @@ impl McpTransport for StdioTransport {
                     let _ = child.wait().await;
                 }
             }
+            // v1.5.0 always cleans up the process group on close, even when
+            // the direct child already exited: npx/uvx grandchildren can still
+            // hold the pipes open.
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                kill_process_tree(pid, libc::SIGTERM);
+            }
         }
         self.inner.events.emit_close();
         Ok(())

@@ -86,7 +86,7 @@ TUI 方向不在本轮范围。权威差距来源是同级 `../pi` 的 `v0.82.1.
 - 上述 P0/P1 已完成修复，逐条见 `PORTING_MISTAKES.md` 与各 crate 的 `CONTRACT_ALIGNMENT.md`；
 - 未实现的**特性**已逐条登记为偏差（状态 `待确认`）：`pi-ai/DEVIATIONS.md` #14–#17
   （per-turn thinking effort、reasoning_details 流式、image input limits、meta/radius provider）、
-  `pi-coding-agent/DEVIATIONS.md` #27、#29、#30（cache warming 展示面、`/bug`、PowerShell 工具）；
+  `pi-coding-agent/DEVIATIONS.md` #27、#30（cache warming 展示面、PowerShell 工具）；
 - 仍未决的既有偏差：`pi-coding-agent/DEVIATIONS.md` #13（mistral 模型在目录但无适配器）；
 - 其余范围外项不变：TUI 组件逐行复刻、MCP 高级（codemode/exposure/resources/OAuth）、
   OAuth 登录、Google/Bedrock/Mistral 适配器、harness 多 lane。
@@ -133,6 +133,26 @@ pi-agent-core 三条、pi-ai 五条）与 `PORTING.md` 高危陷阱 #33–#35。
     `set_working_visible`、`get_editor_text`；仍缺的只剩需要组件树的
     `custom`/`set_footer`/`set_header`/`on_terminal_input`/补全 provider/编辑器组件/主题
     查询（已在根 DEVIATIONS「扩展 UI」逐项列明）。
+
+## 2026-11-10 审计后第二轮修复
+
+按 `docs/archive/MIGRATION_AUDIT_2026-11-10.md` 的复核结果，修完以下 v0.87.1
+目标偏差（逐条记录见各 crate 的 `PORTING_MISTAKES.md` 与 `CONTRACT_ALIGNMENT.md`）：
+
+- pi-ai：`pi-messages` 越界 panic、首个 reasoning chunk 的 `thinking_start`+`thinking_delta`、
+  Anthropic `eager_input_streaming`、Responses `isDifferentModel`、`providerThinkingLevel`、
+  retry 的 HTTP-date/abort、thinking signature 白名单、`meta` 环境变量。
+- pi-agent-core：`prepare_tool_call` 的 abort 检查、compaction 摘要 prompt/previous-summary/
+  sessionId、branch summary 预算例外与 file-ops 播种、skills 的 gitignore 语义与 UTF-16 上限。
+- pi-coding-agent：grep context 的 lossy UTF-8、ls abort/绝对路径错误。 
+- pi-tui：fuzzy 首字符 bonus/换位字符类、Ctrl+J、Tab 强制路径补全、SelectList `maxVisible`、
+  模糊排序 tie-break、read/edit/grep `[invalid arg]`、footer `toFixed`、UTF-16 计数、
+  光标感知的补全应用。
+- pi-cli：`--list-models` 的 auth 过滤与 token 格式、`pi update <source>` 的 npm 包更新。
+- pi-mcp：stdio 进程组的宿主退出清理（`atexit`）。
+- pi-extensions：subagent 预览 UTF-16 与 `$cost` 的 `toFixed(4)`。
+
+**仍未修（范围外/产品决策）**：PowerShell 工具（Windows 专用）、cache warming 的转录 notice 与设置选择器。包管理（`install`/`remove`/`list`/`update <source>`）已按用户要求整体删除：pi-rs 不支持 JS 扩展。
 
 ## 权威文档
 

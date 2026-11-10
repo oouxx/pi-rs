@@ -342,6 +342,7 @@ mod tests {
             },
             reasoning: None,
             thinking_budgets: None,
+            deferred: None,
             debug: None,
         };
         let opts = build_base_options(&model, &empty_context(), Some(&simple), None);
@@ -393,6 +394,7 @@ mod tests {
             },
             reasoning: None,
             thinking_budgets: None,
+            deferred: None,
             debug: None,
         };
         let opts = build_base_options(
@@ -449,6 +451,7 @@ mod tests {
             },
             reasoning: None,
             thinking_budgets: None,
+            deferred: None,
             debug: None,
         };
         let opts = build_base_options(

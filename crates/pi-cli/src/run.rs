@@ -771,56 +771,46 @@ fn conflicting_flags(args: &CliArgs, flags: &[&str]) -> Vec<String> {
     conflicts
 }
 
-/// Handle subcommands (install, remove, list).
-/// Delegates to `handle_package_command` from the shared module
-/// to avoid duplicating the package management logic.
+/// Handle subcommands (`update`, `config`, `mcp`, `refresh`).
+///
+/// Package management (`install`/`remove`/`list`/`update <source>`) is not
+/// part of pi-rs: extensions are Rust-native and there is no JS runtime or
+/// npm package loader.
 async fn handle_subcommand(cmd: &str, args: &[String]) -> i32 {
     let agent_dir = pi_coding_agent::config::get_agent_dir();
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "/tmp".to_string());
 
-    // `pi update` (bare, or with self-update flags --check/--force/--help)
-    // updates the application binary itself; `pi update --all` / `pi update
-    // <source>` target extensions and are delegated to the package manager.
-    if cmd == "update" {
-        let ext_update = args
-            .iter()
-            .any(|a| a == "--all" || a == "-a" || a == "--extensions" || a == "--extension")
-            || args.iter().any(|a| !a.starts_with('-'));
-        // TS `pi update --models` refreshes the model catalogs; this port
-        // exposes the same work as `pi refresh`.
-        if !ext_update && args.iter().any(|a| a == "--models") {
-            return handle_refresh_command(&[], &cwd, &agent_dir).await;
-        }
-        if !ext_update {
-            return crate::update::run_update(args).await;
-        }
-    }
-
-    // Reconstruct full args so the shared module can re-parse them
-    let mut full_args = vec![cmd.to_string()];
-    full_args.extend(args.iter().cloned());
-
-    let code = crate::package_manager_cli::handle_package_command(
-        &full_args,
-        &cwd,
-        &agent_dir.to_string_lossy(),
-    )
-    .await;
-
-    // handle_package_command returns -1 when the command is not a package
-    // command (e.g. "config" or something unknown). Return the exit code
-    // directly for known commands.
-    if code >= 0 {
-        return code;
-    }
-
-    // Not handled by the package manager module
     match cmd {
+        "update" => {
+            let wants_package_update = args.iter().any(|a| {
+                a == "--all" || a == "-a" || a == "--extensions" || a == "--extension"
+            }) || args.iter().any(|a| !a.starts_with('-'));
+            if wants_package_update {
+                eprintln!(
+                    "{} Package management is not supported in pi-rs (extensions are Rust-native).",
+                    "Error:".red().bold()
+                );
+                return EXIT_FAILURE;
+            }
+            // `pi update --models` refreshes the model catalogs; this port
+            // exposes the same work as `pi refresh`.
+            if args.iter().any(|a| a == "--models") {
+                return handle_refresh_command(&[], &cwd, &agent_dir).await;
+            }
+            crate::update::run_update(args).await
+        }
         "config" => handle_config_command(args, &cwd, &agent_dir.to_string_lossy()).await,
         "refresh" => handle_refresh_command(args, &cwd, &agent_dir).await,
         "mcp" => crate::mcp_cli::handle_mcp_command(args).await,
+        "install" | "remove" | "uninstall" | "list" => {
+            eprintln!(
+                "{} Package management is not supported in pi-rs (extensions are Rust-native).",
+                "Error:".red().bold()
+            );
+            EXIT_FAILURE
+        }
         _ => {
             eprintln!("{} Unknown subcommand: {cmd}", "Error:".red().bold());
             EXIT_FAILURE

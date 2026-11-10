@@ -404,27 +404,109 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
     parts.join("\n\n")
 }
 
-const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a summarization assistant. Your task is to create a concise summary of a coding agent conversation.
+const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
-When summarizing:
-1. Preserve key context: what the user asked, what was done, and what remains
-2. Include specific file paths, function names, and code changes
-3. Note any errors encountered and how they were resolved
-4. Keep the summary focused and avoid unnecessary detail
-5. Use bullet points for clarity
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."#;
 
-Format your summary as:
-## Original Request
-[What the user asked for]
+const SUMMARIZATION_PROMPT: &str = r#"The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
-## Work Done
-- [Key actions taken and changes made]
+Use this EXACT format:
 
-## Current State
-- [Where things stand now]
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
 
-## Important Context
-- [Any information needed to continue the work]"#;
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."#;
+
+const UPDATE_SUMMARIZATION_PROMPT: &str = r#"The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."#;
+
+/// Build the summarization request's system prompt and user content, matching
+/// v0.87.1 `generateSummary`: the system prompt is always the fixed summary
+/// prompt; the structured/update prompt lives in the user message, after the
+/// conversation and optional `<previous-summary>` block.
+fn build_summary_prompt(
+    conversation_text: &str,
+    custom_instructions: Option<&str>,
+    previous_summary: Option<&str>,
+) -> (String, String) {
+    let mut base_prompt = if previous_summary.is_some() {
+        UPDATE_SUMMARIZATION_PROMPT
+    } else {
+        SUMMARIZATION_PROMPT
+    }
+    .to_string();
+    if let Some(instructions) = custom_instructions {
+        base_prompt.push_str(&format!("\n\nAdditional focus: {instructions}"));
+    }
+    let mut user_content = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
+    if let Some(prev) = previous_summary {
+        user_content.push_str(&format!(
+            "<previous-summary>\n{prev}\n</previous-summary>\n\n"
+        ));
+    }
+    user_content.push_str(&base_prompt);
+    (SUMMARIZATION_SYSTEM_PROMPT.to_string(), user_content)
+}
 
 /// Generate a summary of the given messages using the LLM.
 ///
@@ -447,7 +529,11 @@ pub async fn complete_summarization(
     // writes that cannot be reused (match TS #6618: fresh routing session ID +
     // `cacheRetention: "none"`).
     options.base.cache_retention = Some(crate::pi_ai_types::CacheRetention::None);
-    options.base.session_id = Some(crate::pi_ai_types::uuid_v7());
+    // TS `sessionId: options.sessionId ?? uuidv7()`: preserve a caller-supplied
+    // session id instead of always overwriting it.
+    if options.base.session_id.is_none() {
+        options.base.session_id = Some(crate::pi_ai_types::uuid_v7());
+    }
     let produce = || {
         let model = model.clone();
         let context = context.clone();
@@ -470,6 +556,8 @@ pub async fn complete_summarization(
                     raw_stop_reason: None,
                     end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
+
+                    deferred: None,
                 },
             }
         }
@@ -503,30 +591,15 @@ pub async fn generate_summary(
         return Ok(String::new());
     }
 
-    // Build system prompt
-    let system_prompt = if let Some(prev) = previous_summary {
-        format!(
-            "{}\n\n## Previous Summary\n{}",
-            SUMMARIZATION_SYSTEM_PROMPT, prev
-        )
-    } else if let Some(instructions) = custom_instructions {
-        format!(
-            "{}\n\n## Custom Instructions\n{}",
-            SUMMARIZATION_SYSTEM_PROMPT, instructions
-        )
-    } else {
-        SUMMARIZATION_SYSTEM_PROMPT.to_string()
-    };
-
     // Convert AgentMessage → LLM Message and serialize
     let llm_messages = crate::harness::messages::convert_to_llm(messages);
     let conversation_text = serialize_conversation(&llm_messages);
 
-    // Build user message with the conversation to summarize
-    let user_content = format!(
-        "Please summarize the following conversation:\n\n<conversation>\n{}\n</conversation>\n\nProvide a concise summary following the format specified above.",
-        conversation_text
-    );
+    // Build the system prompt and the user message exactly as v0.87.1:
+    // fixed system prompt; the structured/update prompt is appended after the
+    // conversation (and optional previous summary) in the user message.
+    let (system_prompt, user_content) =
+        build_summary_prompt(&conversation_text, custom_instructions, previous_summary);
 
     let context = crate::pi_ai_types::Context {
         system_prompt: Some(system_prompt),
@@ -568,6 +641,7 @@ pub async fn generate_summary(
         },
         reasoning,
         thinking_budgets: None,
+        deferred: None,
         debug: None,
     };
 
@@ -648,6 +722,26 @@ mod tests {
             }],
             timestamp: 1000,
         }
+    }
+
+    #[test]
+    fn summary_prompt_uses_fixed_system_prompt_and_structured_prompt() {
+        let (system, user) = build_summary_prompt("CONVERSATION", None, None);
+        assert_eq!(system, SUMMARIZATION_SYSTEM_PROMPT);
+        assert!(user.starts_with("<conversation>\nCONVERSATION\n</conversation>\n\n"));
+        assert!(user.ends_with(SUMMARIZATION_PROMPT));
+        assert!(!user.contains("<previous-summary>"));
+    }
+
+    #[test]
+    fn summary_prompt_uses_update_prompt_and_previous_summary_block() {
+        let (system, user) = build_summary_prompt("NEW", Some("focus on tests"), Some("OLD"));
+        assert_eq!(system, SUMMARIZATION_SYSTEM_PROMPT);
+        assert!(user.contains("<previous-summary>\nOLD\n</previous-summary>\n\n"));
+        assert!(user.contains("Additional focus: focus on tests"));
+        assert!(user.ends_with("Additional focus: focus on tests"));
+        assert!(user.contains(UPDATE_SUMMARIZATION_PROMPT));
+        assert!(!user.contains(SUMMARIZATION_PROMPT));
     }
 
     fn create_assistant_message(text: &str, usage: Usage) -> AgentMessage {

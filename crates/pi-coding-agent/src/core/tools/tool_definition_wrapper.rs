@@ -21,7 +21,9 @@ pub(crate) fn content_blocks_from_values(
                 .unwrap_or_else(|_| {
                     let text = match value {
                         serde_json::Value::String(text) => text,
-                        other => serde_json::to_string(&other).unwrap_or_else(|_| other.to_string()),
+                        other => {
+                            serde_json::to_string(&other).unwrap_or_else(|_| other.to_string())
+                        }
                     };
                     pi_agent_core::pi_ai_types::text_block(text)
                 })

@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use crate::harness::compaction::compaction::{estimate_tokens, serialize_conversation};
-use crate::harness::messages::{
-    create_branch_summary_message, create_compaction_summary_message, create_custom_message,
+use crate::harness::compaction::compaction::{
+    estimate_tokens, extract_file_operations, serialize_conversation,
 };
+use crate::harness::messages::{create_branch_summary_message, create_compaction_summary_message};
 use crate::harness::types::{
     BranchSummaryError, BranchSummaryResult, FileOperations, GenerateBranchSummaryOptions,
     SessionTreeEntry,
@@ -26,25 +26,8 @@ fn get_message_from_entry(entry: &SessionTreeEntry) -> Option<AgentMessage> {
                 Some(message.clone())
             }
         }
-        SessionTreeEntry::CustomMessage {
-            custom_type,
-            content,
-            display,
-            details,
-            ..
-        } => {
-            let custom_content = match content {
-                serde_json::Value::String(s) => crate::types::CustomContent::Text(s.clone()),
-                _ => crate::types::CustomContent::Text(content.to_string()),
-            };
-            Some(create_custom_message(
-                custom_type.clone(),
-                custom_content,
-                *display,
-                details.clone(),
-                chrono::Utc::now().timestamp_millis(),
-            ))
-        }
+        // v0.87.1's branch-summary selector skips custom messages entirely.
+        SessionTreeEntry::CustomMessage { .. } => None,
         SessionTreeEntry::BranchSummary {
             summary, from_id, ..
         } => Some(create_branch_summary_message(
@@ -71,6 +54,33 @@ pub fn prepare_branch_entries(
 ) -> BranchPreparation {
     let mut messages = Vec::new();
     let mut total_tokens = 0u64;
+    let mut file_ops = FileOperations::new();
+
+    // v0.87.1 seeds the file lists from every prior branch-summary entry's
+    // details (`readFiles` → read, `modifiedFiles` → edited) before walking
+    // the messages.
+    for entry in entries {
+        let SessionTreeEntry::BranchSummary {
+            details: Some(details),
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        for (key, target) in [
+            ("readFiles", &mut file_ops.read),
+            ("modifiedFiles", &mut file_ops.edited),
+        ] {
+            let Some(paths) = details.get(key).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for path in paths.iter().filter_map(|p| p.as_str()) {
+                if !target.iter().any(|existing| existing == path) {
+                    target.push(path.to_string());
+                }
+            }
+        }
+    }
 
     for entry in entries.iter().rev() {
         let message = match get_message_from_entry(entry) {
@@ -78,18 +88,42 @@ pub fn prepare_branch_entries(
             None => continue,
         };
 
+        // TS extracts file ops from each message before the budget check.
+        let message_ops = extract_file_operations(std::slice::from_ref(&message));
+        for path in message_ops.read {
+            if !file_ops.read.contains(&path) {
+                file_ops.read.push(path);
+            }
+        }
+        for path in message_ops.written {
+            if !file_ops.written.contains(&path) {
+                file_ops.written.push(path);
+            }
+        }
+        for path in message_ops.edited {
+            if !file_ops.edited.contains(&path) {
+                file_ops.edited.push(path);
+            }
+        }
+
         let tokens = estimate_tokens(&message);
         if token_budget > 0 && total_tokens + tokens > token_budget {
+            // v0.87.1 keeps a compaction/branch-summary entry that would
+            // exceed the budget when less than 90% of it is already used;
+            // these carry prior context and are worth one over-budget entry.
+            let keeps_prior_summary = matches!(
+                entry,
+                SessionTreeEntry::Compaction { .. } | SessionTreeEntry::BranchSummary { .. }
+            );
+            if keeps_prior_summary && (total_tokens as f64) < token_budget as f64 * 0.9 {
+                messages.insert(0, message);
+                total_tokens += tokens;
+            }
             break;
         }
         messages.insert(0, message);
         total_tokens += tokens;
     }
-
-    // v0.87.1 `prepareBranchEntries` extracts read/written/edited files from
-    // the selected messages; without this the branch summary always reports
-    // empty file lists.
-    let file_ops = super::compaction::extract_file_operations(&messages);
 
     BranchPreparation {
         messages,
@@ -205,6 +239,7 @@ pub async fn generate_branch_summary(
         base: stream_options,
         reasoning: None,
         thinking_budgets: None,
+        deferred: None,
         debug: None,
     };
     let response = super::compaction::complete_summarization(
@@ -371,6 +406,71 @@ mod tests {
         let prep = prepare_branch_entries(&entries, 0);
         assert_eq!(prep.messages.len(), 2);
         assert!(prep.total_tokens > 0);
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_seeds_file_ops_from_prior_branch_summaries() {
+        let entries = vec![SessionTreeEntry::BranchSummary {
+            id: "bs1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            from_id: "e0".to_string(),
+            summary: "prior branch".to_string(),
+            details: Some(serde_json::json!({
+                "readFiles": ["src/a.rs"],
+                "modifiedFiles": ["src/b.rs"],
+            })),
+            usage: None,
+            from_hook: None,
+        }];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert!(prep.file_ops.read.contains(&"src/a.rs".to_string()));
+        assert!(prep.file_ops.edited.contains(&"src/b.rs".to_string()));
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_keeps_prior_summary_over_budget() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "e1".to_string(),
+                parent_id: None,
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                message: create_user_message("older message"),
+            },
+            SessionTreeEntry::BranchSummary {
+                id: "bs1".to_string(),
+                parent_id: Some("e1".to_string()),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                from_id: "e0".to_string(),
+                summary: "summary text that exceeds the tiny budget".to_string(),
+                details: None,
+                usage: None,
+                from_hook: None,
+            },
+        ];
+        // The branch summary alone exceeds 1 token, but v0.87.1 keeps it
+        // because less than 90% of the budget has been consumed.
+        let prep = prepare_branch_entries(&entries, 1);
+        assert_eq!(prep.messages.len(), 1);
+        assert!(matches!(
+            prep.messages[0],
+            AgentMessage::BranchSummary { .. }
+        ));
+    }
+
+    #[test]
+    fn test_prepare_branch_entries_skips_custom_messages() {
+        let entries = vec![SessionTreeEntry::CustomMessage {
+            id: "c1".to_string(),
+            parent_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            custom_type: "note".to_string(),
+            content: serde_json::json!("custom note"),
+            display: true,
+            details: None,
+        }];
+        let prep = prepare_branch_entries(&entries, 0);
+        assert!(prep.messages.is_empty());
     }
 
     #[test]

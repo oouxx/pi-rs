@@ -12,6 +12,7 @@ pub struct SelectList {
     items: Vec<String>,
     pub state: ListState,
     title: String,
+    max_visible: usize,
 }
 
 impl SelectList {
@@ -22,7 +23,15 @@ impl SelectList {
             items,
             state,
             title: String::new(),
+            max_visible: 5,
         }
+    }
+
+    /// TS `SelectList(items, maxVisible)`: at most `max` rows are shown,
+    /// centered on the selection. Defaults to 5.
+    pub fn with_max_visible(mut self, max: usize) -> Self {
+        self.max_visible = max.max(1);
+        self
     }
 
     pub fn with_title(mut self, title: &str) -> Self {
@@ -65,6 +74,20 @@ impl SelectList {
     }
 
     pub fn render_to_frame(&self, frame: &mut Frame, area: Rect, t: &crate::theme::Theme) {
+        // TS `getVisibleRange`: keep the selection centered within
+        // `maxVisible` rows (plus the two border rows).
+        let visible_height = (self.max_visible as u16).saturating_add(2);
+        let area = Rect {
+            height: area.height.min(visible_height),
+            ..area
+        };
+        let total = self.items.len();
+        let selected = self.state.selected().unwrap_or(0);
+        let start = if total > self.max_visible {
+            (selected.saturating_sub(self.max_visible / 2)).min(total - self.max_visible)
+        } else {
+            0
+        };
         let items: Vec<ListItem> = self
             .items
             .iter()
@@ -95,6 +118,7 @@ impl SelectList {
         // Clone state for rendering
         let mut state = ListState::default();
         state.select(self.state.selected());
+        *state.offset_mut() = start;
         frame.render_stateful_widget(list, area, &mut state);
     }
 }

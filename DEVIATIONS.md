@@ -191,4 +191,4 @@ TS `9e05370b2` 的 transcript system/tool 变更已在当前 `.version` 基准�
 | 扩展组件级 UI（`custom`/`set_footer`/`set_header`/`on_terminal_input`/补全 provider/编辑器组件/主题查询） | `pi-extension-api::ExtensionUIContext` | 未做（需要组件树），见表格「扩展 UI」 |
 | `meta` / `radius` provider 目录条目 | `xtask/src/generate_models.rs` + 目录 | 未做；下次 `generate-models` 一并补（pi-ai DEVIATIONS #17） |
 | anthropic OAuth 的 Claude Code 工具名归一化 | `providers/anthropic.rs`（`CLAUDE_CODE_TOOLS` 常量已在） | 暂缓（pi-ai DEVIATIONS #10） |
-| `/bug` 上报、PowerShell 工具、llama.cpp router、cache warming 展示面（`/session`）、远程目录自动刷新 | 见 pi-coding-agent DEVIATIONS #10/#27/#29/#30/#15 | 未实现（多数是用户明确排除或等使用场景） |
+| PowerShell 工具、llama.cpp router、cache warming 展示面（`/session`）、远程目录自动刷新 | 见 pi-coding-agent DEVIATIONS #10/#27/#29/#30/#15 | 未实现（多数是用户明确排除或等使用场景） |

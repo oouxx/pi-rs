@@ -21,9 +21,7 @@ fn get_queue_key(file_path: &str) -> String {
     let resolved = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        std::env::current_dir().unwrap_or_default().join(path)
     };
     match resolved.canonicalize() {
         Ok(canonical) => canonical.to_string_lossy().to_string(),

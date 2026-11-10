@@ -116,6 +116,7 @@ fn partial_msg(text: &str) -> AssistantMessage {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: 0,
+        deferred: None,
     }
 }
 
@@ -503,6 +504,7 @@ fn mock_two_bash_tools_stream_fn() -> StreamFn {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 0,
+                        deferred: None,
                     },
                     StopReason::ToolUse,
                 ),
@@ -528,6 +530,7 @@ fn mock_two_bash_tools_stream_fn() -> StreamFn {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 0,
+                        deferred: None,
                     },
                     StopReason::ToolUse,
                 ),

@@ -62,6 +62,14 @@ pub fn round_one_decimal(value: f64) -> u64 {
     (numerator >> (shift + 1)) as u64
 }
 
+/// JS `toFixed(digits)` for finite values: exact ties round away from zero,
+/// unlike Rust's default half-to-even formatting.
+#[must_use]
+pub fn to_fixed(value: f64, digits: usize) -> String {
+    let factor = 10f64.powi(digits as i32);
+    format!("{:.*}", digits, (value * factor).round() / factor)
+}
+
 /// Extract and join text from message content (match TS `contentText`).
 ///
 /// Only `text` blocks are included; thinking/tool-call/image blocks are skipped.

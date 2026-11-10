@@ -107,7 +107,7 @@ impl Input {
         }
         // 4. Large-paste marker (TS: >10 lines or >1000 chars).
         let pasted_lines = normalized.split('\n').count();
-        let total_chars = normalized.chars().count();
+        let total_chars = crate::text_utils::utf16_len(&normalized);
         if pasted_lines > 10 || total_chars > 1000 {
             self.paste_counter += 1;
             let paste_id = self.paste_counter;
@@ -316,6 +316,14 @@ impl Input {
     /// survives and a later `getExpandedText` still resolves the markers).
     pub fn set_value_preserving_pastes(&mut self, value: &str) {
         self.buf = EditBuffer::from_text(value);
+    }
+
+    /// Replace the text, keep the paste registry, and place the cursor at
+    /// `cursor_byte` (clamped to the end). Used by completion application,
+    /// which can edit before the cursor and must preserve the tail.
+    pub fn set_value_preserving_pastes_with_cursor(&mut self, value: &str, cursor_byte: usize) {
+        self.buf = EditBuffer::from_text(value);
+        let _ = self.buf.set_cursor_byte(cursor_byte.min(value.len()));
     }
 }
 

@@ -172,6 +172,14 @@ fn dirname_display(path: &str) -> &str {
     }
 }
 
+/// Number of non-empty path segments (TS `toDisplayPath(path).split("/")`
+/// `.filter(Boolean).length`).
+fn path_depth(path: &str) -> usize {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .count()
+}
+
 fn basename_display(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -485,7 +493,16 @@ pub fn fuzzy_file_suggestions(
             }
         })
         .collect();
-    scored.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
+    scored.sort_by(|a, b| {
+        // v0.87.1 tie-breaks: score desc, path depth asc, path length asc,
+        // then localeCompare (byte order for the ASCII paths fd returns).
+        b.0.cmp(&a.0)
+            .then_with(|| path_depth(&a.1).cmp(&path_depth(&b.1)))
+            .then_with(|| {
+                crate::text_utils::utf16_len(&a.1).cmp(&crate::text_utils::utf16_len(&b.1))
+            })
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
     let mut suggestions = Vec::new();
     for (_, path, is_dir) in scored.into_iter().take(max_results.max(1)) {

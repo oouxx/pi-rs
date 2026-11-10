@@ -958,6 +958,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         }
     }
 
@@ -1448,6 +1449,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let event = AgentSessionEvent::MessageUpdate {
             message: serde_json::from_value(serde_json::json!({
@@ -1725,6 +1727,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let start = AgentSessionEvent::MessageUpdate {
             message: serde_json::from_value(serde_json::json!({
@@ -1769,6 +1772,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let delta = AgentSessionEvent::MessageUpdate {
             message: serde_json::from_value(serde_json::json!({
@@ -1854,6 +1858,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let start = AgentSessionEvent::MessageUpdate {
             message: serde_json::from_value(serde_json::json!({

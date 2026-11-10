@@ -99,6 +99,8 @@ pub enum PiMessagesEvent {
         usage: Usage,
         #[serde(rename = "responseId")]
         response_id: Option<String>,
+        #[serde(rename = "providerThinkingLevel")]
+        provider_thinking_level: Option<String>,
         rewrite: Option<PiMessagesRewriteImpact>,
     },
     Error {
@@ -108,6 +110,8 @@ pub enum PiMessagesEvent {
         error_message: Option<String>,
         #[serde(rename = "responseId")]
         response_id: Option<String>,
+        #[serde(rename = "providerThinkingLevel")]
+        provider_thinking_level: Option<String>,
         rewrite: Option<PiMessagesRewriteImpact>,
     },
 }
@@ -171,6 +175,8 @@ impl PiMessagesConverter {
                 raw_stop_reason: None,
                 end_turn: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
+
+                deferred: None,
             },
             tool_json: HashMap::new(),
         }
@@ -354,13 +360,20 @@ impl PiMessagesConverter {
                 content_index,
                 tool_call,
             } => {
-                self.partial.content[content_index] = ContentBlock::ToolCall {
-                    id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
-                    thought_signature: None,
-                    namespace: None,
-                };
+                // Use the slot helper instead of indexing: a malformed stream
+                // can carry an out-of-range `contentIndex`, and TS's
+                // `Object.assign(partial.content[index]!, ...)` throws a
+                // catchable TypeError there. Rust must not panic.
+                self.set_content_slot(
+                    content_index,
+                    ContentBlock::ToolCall {
+                        id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        arguments: tool_call.arguments.clone(),
+                        thought_signature: None,
+                        namespace: None,
+                    },
+                );
                 self.tool_json.remove(&content_index);
                 AssistantMessageEvent::ToolCallEnd {
                     content_index,
@@ -379,11 +392,15 @@ impl PiMessagesConverter {
                 reason,
                 usage,
                 response_id,
+                provider_thinking_level,
                 rewrite,
             } => {
                 self.partial.stop_reason = reason_to_stop_reason(&reason);
                 self.partial.usage = usage;
                 self.partial.response_id = response_id;
+                if let Some(level) = provider_thinking_level {
+                    self.partial.provider_thinking_level = Some(level);
+                }
                 self.append_rewrite_diagnostic(rewrite.as_ref());
                 AssistantMessageEvent::Done {
                     reason: self.partial.stop_reason.clone(),
@@ -395,6 +412,7 @@ impl PiMessagesConverter {
                 usage,
                 error_message,
                 response_id,
+                provider_thinking_level,
                 rewrite,
             } => {
                 let stop_reason = reason_to_stop_reason(&reason);
@@ -402,6 +420,9 @@ impl PiMessagesConverter {
                 self.partial.usage = usage;
                 self.partial.error_message = error_message;
                 self.partial.response_id = response_id;
+                if let Some(level) = provider_thinking_level {
+                    self.partial.provider_thinking_level = Some(level);
+                }
                 self.append_rewrite_diagnostic(rewrite.as_ref());
                 AssistantMessageEvent::Error {
                     reason: stop_reason,
@@ -729,6 +750,8 @@ pub fn stream_pi_messages(
                 raw_stop_reason: None,
                 end_turn: None,
                 timestamp: chrono::Utc::now().timestamp_millis(),
+
+                deferred: None,
             };
             // Match TS `createErrorEvent`: attach a structured diagnostic for
             // PiMessagesResponseError failures.
@@ -1045,6 +1068,7 @@ mod tests {
                 reason: "stop".into(),
                 usage: Usage::default(),
                 response_id: Some("resp_1".into()),
+                provider_thinking_level: None,
                 rewrite: None,
             },
         ];
@@ -1107,6 +1131,7 @@ mod tests {
                 reason: "toolUse".into(),
                 usage: Usage::default(),
                 response_id: None,
+                provider_thinking_level: None,
                 rewrite: None,
             },
         ];
@@ -1146,6 +1171,58 @@ mod tests {
     }
 
     #[test]
+    fn test_converter_toolcall_end_with_out_of_range_index_does_not_panic() {
+        // A malformed stream can send toolcall_end without a matching
+        // toolcall_start. TS throws a catchable TypeError; Rust must not
+        // panic, and the slot helper extends the content vector instead.
+        let model = make_model();
+        let mut converter = PiMessagesConverter::new(&model);
+        let event = PiMessagesEvent::ToolcallEnd {
+            content_index: 5,
+            tool_call: ToolCall {
+                type_field: "toolCall".into(),
+                id: "call_5".into(),
+                name: "get_weather".into(),
+                arguments: json!({"city": "NYC"}),
+                thought_signature: None,
+                namespace: None,
+            },
+        };
+        let converted = converter.convert(event);
+        assert!(matches!(
+            converted,
+            AssistantMessageEvent::ToolCallEnd {
+                content_index: 5,
+                ..
+            }
+        ));
+        assert_eq!(converter.partial.content.len(), 6);
+        assert!(matches!(
+            &converter.partial.content[5],
+            ContentBlock::ToolCall { id, .. } if id == "call_5"
+        ));
+    }
+
+    #[test]
+    fn test_converter_done_carries_provider_thinking_level() {
+        let model = make_model();
+        let mut converter = PiMessagesConverter::new(&model);
+        let converted = converter.convert(PiMessagesEvent::Done {
+            reason: "stop".into(),
+            usage: Usage::default(),
+            response_id: None,
+            provider_thinking_level: Some("high".into()),
+            rewrite: None,
+        });
+        match converted {
+            AssistantMessageEvent::Done { message, .. } => {
+                assert_eq!(message.provider_thinking_level.as_deref(), Some("high"));
+            }
+            _ => panic!("expected done"),
+        }
+    }
+
+    #[test]
     fn test_converter_error_and_rewrite_diagnostic() {
         let model = make_model();
         let mut converter = PiMessagesConverter::new(&model);
@@ -1162,6 +1239,7 @@ mod tests {
             usage: Usage::default(),
             error_message: Some("upstream failed".into()),
             response_id: Some("resp_2".into()),
+            provider_thinking_level: None,
             rewrite: Some(rewrite),
         };
         match converter.convert(event) {

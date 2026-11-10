@@ -32,7 +32,6 @@ pub mod mcp_tools;
 pub mod messages;
 pub mod model_registry;
 pub mod model_resolver;
-pub mod package_manager;
 pub mod project_trust;
 pub mod prompt_templates;
 pub mod provider_attribution;

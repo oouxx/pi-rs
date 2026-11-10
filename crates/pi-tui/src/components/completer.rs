@@ -248,17 +248,12 @@ impl Completer {
         self.results.get(self.selected)
     }
 
-    /// 应用选中项：返回替换后的完整输入文本（不修改内部状态）。
+    /// 应用选中项：返回替换后的完整输入文本和新光标位置（不修改内部状态）。
     /// 对齐 TS `applyCompletion`：slash 命令补全后加空格；参数补全不加；
     /// `@` 文件补全非目录加空格、目录不加（继续补全）。
-    pub fn apply_selected(&self, input_value: &str) -> Option<String> {
+    pub fn apply_selected(&self, input: CompletionInput<'_>) -> Option<(String, usize)> {
         let item = self.selected_item()?;
-        Some(apply_completion(
-            input_value,
-            self.trigger?,
-            &self.prefix,
-            item,
-        ))
+        Some(apply_completion(input, self.trigger?, &self.prefix, item))
     }
 
     /// Render the completion list TS-style (the original `SelectList` used
@@ -400,28 +395,46 @@ fn normalize_single_line(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// Input text plus cursor position (byte offset) for completion edits.
+#[derive(Debug, Clone, Copy)]
+pub struct CompletionInput<'a> {
+    pub value: &'a str,
+    pub cursor_byte: usize,
+}
+
 /// 应用选中项（对齐 TS `applyCompletion`）。
+///
+/// Keeps the text after the cursor (TS `afterCursor`) and returns the new
+/// cursor byte offset, instead of assuming the completion prefix is the tail
+/// of the whole input.
 pub fn apply_completion(
-    input_value: &str,
+    input: CompletionInput<'_>,
     trigger: CompletionTrigger,
     prefix: &str,
     item: &CompletionItem,
-) -> String {
-    let prefix_len = prefix.chars().count();
-    let total_chars: Vec<char> = input_value.chars().collect();
-    let cut = total_chars.len().saturating_sub(prefix_len);
-    let before: String = total_chars[..cut].iter().collect();
+) -> (String, usize) {
+    let value = input.value;
+    let cursor_byte = input.cursor_byte.min(value.len());
+    let prefix_start = cursor_byte.saturating_sub(prefix.len());
+    let before = &value[..prefix_start];
+    let after = &value[cursor_byte..];
     match trigger {
         CompletionTrigger::Slash => {
-            format!("{before}/{} ", item.value)
+            let new_value = format!("{before}/{} {after}", item.value);
+            let cursor = prefix_start + 1 + item.value.len() + 1;
+            (new_value, cursor)
         }
         CompletionTrigger::Argument => {
-            format!("{before}{}", item.value)
+            let new_value = format!("{before}{}{after}", item.value);
+            let cursor = prefix_start + item.value.len();
+            (new_value, cursor)
         }
         CompletionTrigger::At => {
             // 目录不加空格（继续补全）；文件加空格（TS @ 分支）。
             let suffix = if item.label.ends_with('/') { "" } else { " " };
-            format!("{before}{}{suffix}", item.value)
+            let new_value = format!("{before}{}{suffix}{after}", item.value);
+            let cursor = prefix_start + item.value.len() + suffix.len();
+            (new_value, cursor)
         }
     }
 }
@@ -429,5 +442,43 @@ pub fn apply_completion(
 impl Default for Completer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_completion_preserves_text_after_the_cursor() {
+        let item = CompletionItem::new("model", "model", "");
+        // "/mo" before the cursor, " tail" after it.
+        let (value, cursor) = apply_completion(
+            CompletionInput {
+                value: "/mo tail",
+                cursor_byte: 3,
+            },
+            CompletionTrigger::Slash,
+            "/mo",
+            &item,
+        );
+        assert_eq!(value, "/model  tail");
+        assert_eq!(cursor, "/model ".len());
+    }
+
+    #[test]
+    fn apply_file_completion_keeps_after_cursor_and_suffix() {
+        let item = CompletionItem::new("@src/a.rs", "src/a.rs", "");
+        let (value, cursor) = apply_completion(
+            CompletionInput {
+                value: "@sr/next",
+                cursor_byte: 3,
+            },
+            CompletionTrigger::At,
+            "@sr",
+            &item,
+        );
+        assert_eq!(value, "@src/a.rs /next");
+        assert_eq!(cursor, "@src/a.rs ".len());
     }
 }

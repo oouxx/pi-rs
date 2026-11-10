@@ -84,6 +84,16 @@ enum AgentCmd {
     LogoutProvider {
         provider: String,
     },
+    /// `/session`: print prompt-cache warming status (TS `/session`).
+    SessionStatus,
+    /// `/resume [id|path]`: list sessions or switch to one.
+    ResumeList(Option<String>),
+    /// `/import <path>`: replace the current session with a saved JSONL file.
+    ImportSession(String),
+    /// `/debug`: print runtime/session diagnostics.
+    DebugInfo,
+    /// `/settings`: print the effective settings summary.
+    SettingsSummary,
 }
 
 // ============================================================================
@@ -975,15 +985,22 @@ fn handle_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effe
                 if state.model.completer.has_fresh_results() {
                     // 对齐 TS applyCompletion：替换整段前缀（slash 命令补全后
                     // 加空格；`@` 文件目录不加空格、文件加空格；参数不加）。
-                    if let Some(new_value) = state
-                        .model
-                        .completer
-                        .apply_selected(state.model.input.value())
+                    if let Some((new_value, new_cursor)) =
+                        state
+                            .model
+                            .completer
+                            .apply_selected(pi_tui::components::CompletionInput {
+                                value: state.model.input.value(),
+                                cursor_byte: state.model.input.cursor_pos(),
+                            })
                     {
                         // 保留粘贴表：新文本由当前文本派生、仍含其 marker；
                         // 用 `set_value` 会清表，导致之后提交的是 marker 原文
                         // （对齐 TS `applyCompletion` 直接改 lines 的语义）。
-                        state.model.input.set_value_preserving_pastes(&new_value);
+                        state
+                            .model
+                            .input
+                            .set_value_preserving_pastes_with_cursor(&new_value, new_cursor);
                     }
                     state.model.completer.deactivate();
                     // 对齐 TS：仅 `/` 补全应用后继续走（提交执行命令）；
@@ -1460,45 +1477,22 @@ fn slash_command(state: &mut AppState, text: &str) -> Vec<Effect> {
         // Recognized commands that this build does not implement yet must not
         // be sent to the model as ordinary user text (v0.87.1 handles them in
         // interactive-mode.ts).
-        "/settings" => {
-            system(
-                state,
-                "Settings are stored in the agent settings file; edit it directly for now.".into(),
-            );
-            vec![]
-        }
-        "/resume" => {
-            system(
-                state,
-                "Resume a session by restarting with `--resume` or `/sessions` in the TUI.".into(),
-            );
-            vec![]
-        }
+        "/settings" => vec![Effect::AgentCommand(AgentCmd::SettingsSummary)],
+        "/resume" => vec![Effect::AgentCommand(AgentCmd::ResumeList(
+            (!args.trim().is_empty()).then(|| args.trim().to_string()),
+        ))],
         "/import" => {
-            system(
-                state,
-                "Usage: /import <session-file> (not wired to the TUI in this build).".into(),
-            );
-            vec![]
+            if args.trim().is_empty() {
+                system(state, "Usage: /import <path.jsonl>".into());
+                vec![]
+            } else {
+                vec![Effect::AgentCommand(AgentCmd::ImportSession(
+                    args.trim().to_string(),
+                ))]
+            }
         }
-        "/changelog" => {
-            system(state, "See the repository CHANGELOG for changes.".into());
-            vec![]
-        }
-        "/hotkeys" => {
-            system(
-                state,
-                "Hotkeys: Esc interrupt, Ctrl+C copy/abort, Ctrl+O expand, Tab complete, Shift+Enter newline.".into(),
-            );
-            vec![]
-        }
-        "/debug" => {
-            system(
-                state,
-                "Debug info: use `--verbose` and the session file under the agent directory.".into(),
-            );
-            vec![]
-        }
+        "/debug" => vec![Effect::AgentCommand(AgentCmd::DebugInfo)],
+        "/session" => vec![Effect::AgentCommand(AgentCmd::SessionStatus)],
         "/theme" => {
             // Switch the active palette. `/theme` toggles dark/light;
             // `/theme dark` / `/theme light` (or any prefix) picks one
@@ -1622,9 +1616,7 @@ fn open_mcp_manager(state: &mut AppState, args: &str) -> Vec<Effect> {
         return vec![];
     };
     let cwd = state.model.cwd.clone();
-    let agent_dir = crate::config::get_agent_dir()
-        .to_string_lossy()
-        .to_string();
+    let agent_dir = crate::config::get_agent_dir().to_string_lossy().to_string();
     let mut ui = mcp_ui::McpUiState::new(cwd, agent_dir, ui_tx.clone());
     state.model.mode = pi_tui::AppMode::Panel { panel: ui.panel() };
     ui.dispatch_action(args, &ui_tx);
@@ -1634,10 +1626,7 @@ fn open_mcp_manager(state: &mut AppState, args: &str) -> Vec<Effect> {
 }
 
 #[cfg(feature = "mcp")]
-fn handle_mcp_panel_key(
-    state: &mut AppState,
-    key: crossterm::event::KeyEvent,
-) -> Vec<Effect> {
+fn handle_mcp_panel_key(state: &mut AppState, key: crossterm::event::KeyEvent) -> Vec<Effect> {
     use crossterm::event::{KeyCode, KeyModifiers};
     if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
         close_mcp_manager(state);
@@ -1647,10 +1636,7 @@ fn handle_mcp_panel_key(
         close_mcp_manager(state);
         return vec![];
     };
-    let result = state
-        .mcp_ui
-        .as_mut()
-        .map(|ui| ui.handle_key(key, &ui_tx));
+    let result = state.mcp_ui.as_mut().map(|ui| ui.handle_key(key, &ui_tx));
     match result {
         Some(mcp_ui::McpKeyResult::Redraw) => {
             if let Some(ui) = &state.mcp_ui {
@@ -2106,11 +2092,12 @@ async fn resolve_completion(
             let cwd = sources.cwd.clone();
             let prefix = req.prefix.clone();
             let (raw, is_at, is_quoted) = pi_tui::completion::parse_path_prefix(&prefix);
-            let is_at = is_at || req.force;
             tokio::task::spawn_blocking(move || {
                 if is_at {
                     pi_tui::completion::fuzzy_file_suggestions(&cwd, &raw, is_quoted, true, 20)
                 } else {
+                    // Forced Tab uses the same readdir/prefix walk as v0.87.1
+                    // `getFileSuggestions`; it must not switch to `@` semantics.
                     pi_tui::completion::file_suggestions(&cwd, &prefix)
                 }
             })
@@ -2697,6 +2684,104 @@ fn spawn_agent_command_task(
                         }
                         AgentCmd::SetSessionName(name) => {
                             sess.set_session_name(&name);
+                        }
+                        AgentCmd::SessionStatus => {
+                            let now = chrono::Utc::now().timestamp_millis() as u64;
+                            let text = match sess.cache_warming_status().await {
+                                Some(status) => format!(
+                                    "Prompt cache warming: {}",
+                                    crate::core::cache_warmer::format_cache_warming_status(
+                                        &status, now
+                                    )
+                                ),
+                                None => "Prompt cache warming: unavailable".to_string(),
+                            };
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), text));
+                        }
+                        AgentCmd::ResumeList(query) => {
+                            use crate::core::session_manager::SessionManager;
+                            let sessions = SessionManager::list(sess.get_cwd(), None).await;
+                            let text = match query {
+                                None => {
+                                    if sessions.is_empty() {
+                                        "No saved sessions.".to_string()
+                                    } else {
+                                        let mut lines = vec!["Saved sessions (newest first):".to_string()];
+                                        for info in sessions.iter().take(10) {
+                                            let name = info.name.as_deref().unwrap_or("");
+                                            lines.push(format!(
+                                                "  {}  {}  {}{}",
+                                                info.id,
+                                                info.modified.format("%Y-%m-%d %H:%M"),
+                                                info.path.display(),
+                                                if name.is_empty() { String::new() } else { format!("  ({name})") }
+                                            ));
+                                        }
+                                        lines.push("Use `/resume <id>` to load one.".to_string());
+                                        lines.join("\n")
+                                    }
+                                }
+                                Some(query) => {
+                                    let found = sessions.iter().find(|info| {
+                                        info.id == query || info.id.starts_with(&query)
+                                    });
+                                    match found {
+                                        Some(info) => match sess
+                                            .session_mgr_switch(&info.path.to_string_lossy(), None)
+                                            .await
+                                        {
+                                            Ok(true) => {
+                                                let _ = result_tx.send(pi_tui::Msg::ClearScreen);
+                                                format!("Resumed session {}", info.id)
+                                            }
+                                            Ok(false) => "Resume cancelled by extension".to_string(),
+                                            Err(error) => format!("Resume failed: {error}"),
+                                        },
+                                        None => format!("No session matching `{query}`"),
+                                    }
+                                }
+                            };
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), text));
+                        }
+                        AgentCmd::ImportSession(path) => {
+                            let text = match sess.session_mgr_switch(&path, None).await {
+                                Ok(true) => {
+                                    let _ = result_tx.send(pi_tui::Msg::ClearScreen);
+                                    format!("Session imported from: {path}")
+                                }
+                                Ok(false) => "Import cancelled".to_string(),
+                                Err(error) => format!("Failed to import session: {error}"),
+                            };
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), text));
+                        }
+                        AgentCmd::DebugInfo => {
+                            let session_file = sess
+                                .get_session_file()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "(not persisted yet)".to_string());
+                            let text = format!(
+                                "pi-rs {}\ncwd: {}\nsession: {}\nfile: {}",
+                                env!("CARGO_PKG_VERSION"),
+                                sess.get_cwd(),
+                                sess.get_session_id(),
+                                session_file
+                            );
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), text));
+                        }
+                        AgentCmd::SettingsSummary => {
+                            let text = format!(
+                                "Settings (effective):\n  theme: {}\n  thinking: {}\n  autoRetry: {}\n  compaction: {} (reserve {} / keep {})\n  autocompleteMaxVisible: {}\n  fullscreenCopyOnSelect: {}\n  skillCommands: {}",
+                                sess.get_theme_setting().unwrap_or_else(|| "auto".to_string()),
+                                sess.get_thinking_level().await,
+                                sess.auto_retry_enabled(),
+                                sess.get_compaction_settings().compact_on_threshold,
+                                sess.get_compaction_settings().reserve_tokens,
+                                sess.get_compaction_settings().keep_recent_tokens,
+                                sess.get_autocomplete_max_visible(),
+                                sess.get_fullscreen_copy_on_select(),
+                                sess.get_enable_skill_commands()
+                            );
+                            let _ = result_tx.send(pi_tui::Msg::NewMessage("system".into(), text));
                         }
                         AgentCmd::CopySelection(text) => {
                             // App-owned 选区复制（copy-on-select / Ctrl+X

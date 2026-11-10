@@ -15,8 +15,8 @@ use super::truncate::{self, format_size, TruncationResult, DEFAULT_MAX_BYTES};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadToolInput {
     pub path: String,
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
+    pub offset: Option<f64>,
+    pub limit: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,14 +189,8 @@ pub fn create_read_tool(
                 let fallback_resize_options = fallback_resize_options.clone();
                 Box::pin(async move {
                     let file_path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                    let offset = params
-                        .get("offset")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize);
-                    let limit = params
-                        .get("limit")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize);
+                    let offset = super::js_number::js_number(params.get("offset"));
+                    let limit = super::js_number::js_number(params.get("limit"));
 
                     let absolute_path = path_utils::resolve_read_path(file_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
@@ -293,67 +287,77 @@ pub fn create_read_tool(
 
                     let all_lines: Vec<&str> = text_content.split('\n').collect();
                     let total_file_lines = all_lines.len();
-                    let start_line = offset.map(|o| if o > 0 { o - 1 } else { 0 }).unwrap_or(0);
+                    // TS `offset ? Math.max(0, offset - 1) : 0` — keep the JS
+                    // number so fractional offsets affect slice/logic the same.
+                    let start_line = match offset {
+                        Some(o) if o != 0.0 && !o.is_nan() => (o - 1.0).max(0.0),
+                        _ => 0.0,
+                    };
+                    let start_index = super::js_number::to_slice_index(start_line);
+                    let js = super::js_number::js_number_display;
 
-                    if start_line >= all_lines.len() {
+                    if start_line >= all_lines.len() as f64 {
                         // TS `reject`s here (error tool result).
                         return Err(format!(
                             "Offset {} is beyond end of file ({} lines total)",
-                            offset.unwrap_or(0),
+                            js(offset.unwrap_or(0.0)),
                             total_file_lines
                         )
                         .into());
                     }
 
-                    let selected_content = if let Some(lim) = limit {
-                        let end_line = std::cmp::min(start_line + lim, all_lines.len());
-                        all_lines[start_line..end_line].join("\n")
+                    let (selected_content, user_limited_lines) = if let Some(lim) = limit {
+                        let end_line = (start_line + lim).min(all_lines.len() as f64);
+                        let end_index = super::js_number::to_slice_index(end_line);
+                        let content = if end_index <= start_index {
+                            String::new()
+                        } else {
+                            all_lines[start_index..end_index].join("\n")
+                        };
+                        (content, Some(end_line - start_line))
                     } else {
-                        all_lines[start_line..].join("\n")
+                        (all_lines[start_index..].join("\n"), None)
                     };
-
-                    let user_limited_lines =
-                        limit.map(|lim| std::cmp::min(lim, all_lines.len() - start_line));
                     let truncation = truncate::truncate_head(&selected_content, None);
                     let mut details = ReadToolDetails::default();
                     let output_text;
 
                     if truncation.first_line_exceeds_limit {
-                        let first_line_size = format_size(all_lines[start_line].len());
+                        let first_line_size = format_size(all_lines[start_index].len());
                         output_text = format!(
                             "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
-                            start_line + 1, first_line_size, format_size(DEFAULT_MAX_BYTES),
-                            start_line + 1, file_path, DEFAULT_MAX_BYTES
+                            js(start_line + 1.0), first_line_size, format_size(DEFAULT_MAX_BYTES),
+                            js(start_line + 1.0), file_path, DEFAULT_MAX_BYTES
                         );
                         details.truncation = Some(truncation);
                     } else if truncation.truncated {
-                        let end_line_display = start_line + truncation.output_lines;
-                        let next_offset = end_line_display + 1;
+                        let end_line_display = start_line + truncation.output_lines as f64;
+                        let next_offset = end_line_display + 1.0;
                         let truncated_by = truncation.truncated_by.as_deref().unwrap_or("lines");
                         output_text = if truncated_by == "lines" {
                             format!(
                                 "{}\n\n[Showing lines {}-{} of {}. Use offset={} to continue.]",
                                 truncation.content,
-                                start_line + 1,
-                                end_line_display,
+                                js(start_line + 1.0),
+                                js(end_line_display),
                                 total_file_lines,
-                                next_offset
+                                js(next_offset)
                             )
                         } else {
                             format!(
                                 "{}\n\n[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
-                                truncation.content, start_line + 1, end_line_display, total_file_lines,
-                                format_size(DEFAULT_MAX_BYTES), next_offset
+                                truncation.content, js(start_line + 1.0), js(end_line_display), total_file_lines,
+                                format_size(DEFAULT_MAX_BYTES), js(next_offset)
                             )
                         };
                         details.truncation = Some(truncation);
                     } else if let Some(ull) = user_limited_lines {
-                        if start_line + ull < all_lines.len() {
-                            let remaining = all_lines.len() - (start_line + ull);
-                            let next_offset = start_line + ull + 1;
+                        if start_line + ull < all_lines.len() as f64 {
+                            let remaining = all_lines.len() as f64 - (start_line + ull);
+                            let next_offset = start_line + ull + 1.0;
                             output_text = format!(
                                 "{}\n\n[{} more lines in file. Use offset={} to continue.]",
-                                truncation.content, remaining, next_offset
+                                truncation.content, js(remaining), js(next_offset)
                             );
                         } else {
                             output_text = truncation.content;
@@ -393,8 +397,8 @@ mod tests {
         });
         let input: ReadToolInput = serde_json::from_value(json).unwrap();
         assert_eq!(input.path, "/tmp/test.txt");
-        assert_eq!(input.offset, Some(10));
-        assert_eq!(input.limit, Some(20));
+        assert_eq!(input.offset, Some(10.0));
+        assert_eq!(input.limit, Some(20.0));
     }
 
     #[test]

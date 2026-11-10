@@ -118,6 +118,8 @@ pub fn stream_proxy(
             raw_stop_reason: None,
             end_turn: None,
             timestamp: chrono::Utc::now().timestamp_millis(),
+
+            deferred: None,
         };
 
         let client = reqwest::Client::new();
@@ -514,6 +516,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         }
     }
 

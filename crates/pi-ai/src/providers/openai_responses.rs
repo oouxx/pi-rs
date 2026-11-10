@@ -439,8 +439,11 @@ fn convert_responses_messages_inner(
                 model: msg_model,
                 ..
             } => {
-                let is_same_model =
-                    msg_model == &model.id && provider == &model.provider && api == &model.api;
+                let is_same_provider_and_api = provider == &model.provider && api == &model.api;
+                let is_same_model = is_same_provider_and_api && msg_model == &model.id;
+                // TS `isDifferentModel`: same provider + api but a different
+                // model. Cross-provider messages are NOT "different model".
+                let is_different_model = is_same_provider_and_api && msg_model != &model.id;
                 let mut output: Vec<Value> = Vec::new();
                 let mut text_block_index = 0usize;
 
@@ -508,9 +511,9 @@ fn convert_responses_messages_inner(
                             let can_replay_namespace = is_same_model;
                             // Drop non-fc_* ids and foreign fc_* ids (unless the
                             // tool is grammar-constrained, which keeps its id).
-                            // Match TS: drop iff `(!isSameModel && fc_)` OR
+                            // Match TS: drop iff `(isDifferentModel && fc_)` OR
                             // `(!grammar && !fc_)`.
-                            if (!is_same_model && item_id_raw.starts_with("fc_"))
+                            if (is_different_model && item_id_raw.starts_with("fc_"))
                                 || (custom_input_property.is_none()
                                     && !item_id_raw.starts_with("fc_"))
                             {
@@ -2096,6 +2099,8 @@ pub fn stream_openai_responses(
                     raw_stop_reason: None,
                     end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
+
+                    deferred: None,
                 },
             });
         }
@@ -2246,6 +2251,8 @@ async fn stream_openai_responses_inner(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
+
+        deferred: None,
     };
 
     let _ = tx.send(AssistantMessageEvent::Start {
@@ -2255,44 +2262,41 @@ async fn stream_openai_responses_inner(
     // Catch stream errors after the body so the partial content/usage is
     // preserved in the emitted `error` event (v0.87.1 catch reuses `output`).
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-    let service_tier = options.and_then(|o| o.service_tier.as_deref());
-    let compat = get_compat(model);
-    let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
-    let grammar_properties = grammar_tool_input_properties(context, supports_grammar);
-    process_responses_stream_with_idle(
-        events,
-        &mut output,
-        tx,
-        model,
-        service_tier,
-        &grammar_properties,
-        signal,
-        crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms)),
-    )
-    .await?;
+        let service_tier = options.and_then(|o| o.service_tier.as_deref());
+        let compat = get_compat(model);
+        let supports_grammar = compat.supports_openai_grammar_tools.unwrap_or(false);
+        let grammar_properties = grammar_tool_input_properties(context, supports_grammar);
+        process_responses_stream_with_idle(
+            events,
+            &mut output,
+            tx,
+            model,
+            service_tier,
+            &grammar_properties,
+            signal,
+            crate::utils::idle::resolve_idle_timeout(options.and_then(|o| o.timeout_ms)),
+        )
+        .await?;
 
-    if output.stop_reason == StopReason::Stop {
-        output.stop_reason = StopReason::Stop;
-    }
+        if output.stop_reason == StopReason::Stop {
+            output.stop_reason = StopReason::Stop;
+        }
 
-    // v0.87.1 throws for `error`/`pending`; the catch emits an `error` event.
-    if matches!(
-        output.stop_reason,
-        StopReason::Error | StopReason::Pending
-    ) {
-        output.stop_reason = StopReason::Error;
-        let _ = tx.send(AssistantMessageEvent::Error {
-            reason: StopReason::Error,
-            error: output.clone(),
-        });
-    } else {
-        let _ = tx.send(AssistantMessageEvent::Done {
-            reason: output.stop_reason.clone(),
-            message: output.clone(),
-        });
-    }
+        // v0.87.1 throws for `error`/`pending`; the catch emits an `error` event.
+        if matches!(output.stop_reason, StopReason::Error | StopReason::Pending) {
+            output.stop_reason = StopReason::Error;
+            let _ = tx.send(AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error: output.clone(),
+            });
+        } else {
+            let _ = tx.send(AssistantMessageEvent::Done {
+                reason: output.stop_reason.clone(),
+                message: output.clone(),
+            });
+        }
 
-    Ok(())
+        Ok(())
     }
     .await;
 
@@ -2566,6 +2570,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let events = vec![
@@ -2587,6 +2592,45 @@ mod tests {
         .unwrap();
         assert_eq!(output.end_turn, Some(true), "end_turn must be preserved");
         let _ = rx;
+    }
+
+    #[test]
+    fn test_cross_provider_tool_call_keeps_fc_item_id() {
+        // TS `isDifferentModel` is true only for the same provider+api with a
+        // different model. Cross-provider history must keep `fc_*` item ids.
+        let model = make_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::Assistant {
+                provider_thinking_level: None,
+                content: vec![ContentBlock::ToolCall {
+                    id: "call_1|fc_item_1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                    thought_signature: None,
+                    namespace: None,
+                }],
+                api: "openai-responses".into(),
+                provider: "openrouter".into(),
+                model: "some-other-model".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::ToolUse,
+                error_message: None,
+                timestamp: 0,
+            }],
+            tools: None,
+        };
+        let converted =
+            convert_responses_messages(&model, &context, false, &OpenAIResponsesCompat::default())
+                .unwrap();
+        let call = converted
+            .iter()
+            .find(|item| item.get("type").and_then(|t| t.as_str()) == Some("function_call"))
+            .expect("function_call item");
+        assert_eq!(call.get("id").and_then(|v| v.as_str()), Some("fc_item_1"));
     }
 
     #[test]
@@ -2732,6 +2776,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let events = vec![
@@ -2799,6 +2844,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut grammar = std::collections::HashMap::new();
@@ -2941,6 +2987,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let mut reasoning_blocks = HashMap::new();
         let response = json!({
@@ -3026,6 +3073,7 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            deferred: None,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let events = vec![

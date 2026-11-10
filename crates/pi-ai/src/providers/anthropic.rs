@@ -207,6 +207,9 @@ pub(crate) struct AnthropicTool {
     #[serde(rename = "defer_loading")]
     defer_loading: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "eager_input_streaming")]
+    eager_input_streaming: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     strict: Option<bool>,
 }
 
@@ -819,8 +822,11 @@ pub(crate) fn convert_tools(
     tools: &[Tool],
     cache_control: Option<&AnthropicCacheControl>,
     defer_loading: bool,
-    supports_strict_tools: bool,
+    compat: &AnthropicMessagesCompat,
 ) -> Result<Vec<AnthropicTool>, String> {
+    let supports_strict_tools = compat.supports_strict_tools.unwrap_or(false);
+    let supports_eager_tool_input_streaming =
+        compat.supports_eager_tool_input_streaming.unwrap_or(true);
     let count = tools.len();
     tools
         .iter()
@@ -873,6 +879,11 @@ pub(crate) fn convert_tools(
                     None
                 },
                 defer_loading: if defer_loading { Some(true) } else { None },
+                eager_input_streaming: if supports_eager_tool_input_streaming {
+                    Some(true)
+                } else {
+                    None
+                },
                 strict,
             })
         })
@@ -1119,6 +1130,8 @@ pub fn stream_anthropic(
                     raw_stop_reason: None,
                     end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
+
+                    deferred: None,
                 },
             });
         }
@@ -1372,41 +1385,27 @@ async fn stream_anthropic_inner(
     } else {
         None
     };
-    let supports_strict_tools = compat.supports_strict_tools.unwrap_or(false);
     if native_tool_changes {
         // Initial tools stay active with the cache breakpoint on the last one;
         // later declarations are deferred (`tool_addition`) and removals withdrawn
         // by `tool_removal`, so the request-level list only grows (cached prefix intact).
-        let mut all_tools = convert_tools(
-            &native_initial_tools,
-            tools_cache_control,
-            false,
-            supports_strict_tools,
-        )?;
+        let mut all_tools =
+            convert_tools(&native_initial_tools, tools_cache_control, false, &compat)?;
         all_tools.push(AnthropicTool {
             name: "__pi_deferred_placeholder__".to_string(),
             description: "Reserved placeholder. Never available. Never call this.".to_string(),
             input_schema: json!({"type": "object", "properties": {}, "required": []}),
             cache_control: None,
             defer_loading: Some(true),
+            eager_input_streaming: None,
             strict: None,
         });
-        all_tools.extend(convert_tools(
-            &native_later_tools,
-            None,
-            true,
-            supports_strict_tools,
-        )?);
+        all_tools.extend(convert_tools(&native_later_tools, None, true, &compat)?);
         body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
     } else if !request_tools.is_empty() {
         // cache_control on the last tool (match TS convertTools) only when the
         // provider supports it.
-        let all_tools = convert_tools(
-            &request_tools,
-            tools_cache_control,
-            false,
-            supports_strict_tools,
-        )?;
+        let all_tools = convert_tools(&request_tools, tools_cache_control, false, &compat)?;
         body.insert("tools".to_string(), serde_json::to_value(all_tools)?);
     }
 
@@ -1613,6 +1612,8 @@ async fn stream_anthropic_inner(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
+
+        deferred: None,
     };
 
     let _ = tx.send(AssistantMessageEvent::Start {
@@ -2634,15 +2635,37 @@ mod tests {
             parameters: serde_json::json!({"type": "object", "properties": {}}),
             constrained_sampling: None,
         }];
-        let converted = convert_tools(&tools, None, true, false).unwrap();
+        let converted =
+            convert_tools(&tools, None, true, &AnthropicMessagesCompat::default()).unwrap();
         assert_eq!(converted[0].defer_loading, Some(true));
-        let converted = convert_tools(&tools, None, false, false).unwrap();
+        // v0.87.1 defaults `supportsEagerToolInputStreaming` to true and emits
+        // `eager_input_streaming: true` on each tool.
+        assert_eq!(converted[0].eager_input_streaming, Some(true));
+        let converted =
+            convert_tools(&tools, None, false, &AnthropicMessagesCompat::default()).unwrap();
         assert_eq!(converted[0].defer_loading, None);
     }
 
     #[test]
+    fn test_convert_tools_eager_input_streaming_can_be_disabled() {
+        let tools = vec![Tool {
+            name: "read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            constrained_sampling: None,
+        }];
+        let compat = AnthropicMessagesCompat {
+            supports_eager_tool_input_streaming: Some(false),
+            ..Default::default()
+        };
+        let converted = convert_tools(&tools, None, false, &compat).unwrap();
+        assert_eq!(converted[0].eager_input_streaming, None);
+    }
+
+    #[test]
     fn test_convert_tools_empty() {
-        let converted = convert_tools(&[], None, false, false).unwrap();
+        let converted =
+            convert_tools(&[], None, false, &AnthropicMessagesCompat::default()).unwrap();
         assert!(converted.is_empty());
     }
 
@@ -2667,7 +2690,13 @@ mod tests {
             cache_type: "ephemeral".to_string(),
             ttl: None,
         };
-        let converted = convert_tools(&tools, Some(&cc), false, false).unwrap();
+        let converted = convert_tools(
+            &tools,
+            Some(&cc),
+            false,
+            &AnthropicMessagesCompat::default(),
+        )
+        .unwrap();
         assert!(converted[0].cache_control.is_none());
         assert!(converted[1].cache_control.is_some());
     }

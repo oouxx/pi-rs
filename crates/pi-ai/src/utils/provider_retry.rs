@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use tokio::sync::watch;
 
 const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
@@ -105,9 +106,10 @@ pub fn get_retry_delay_ms(
     if let Some(ref retry_after) = err.retry_after {
         let seconds: f64 = retry_after.trim().parse().unwrap_or(f64::NAN);
         let delay_ms = if seconds.is_nan() {
-            // HTTP-date format: compute remaining time.
-            let _ = retry_after;
-            return Err("Unsupported retry-after date format".to_string());
+            // TS: `Date.parse(retryAfter) - Date.now()`. A valid HTTP-date
+            // yields the remaining delay; an unparseable value yields NaN,
+            // which `setTimeout` treats as 0.
+            parse_http_date_ms(retry_after).unwrap_or(0.0)
         } else {
             seconds * 1000.0
         };
@@ -115,6 +117,23 @@ pub fn get_retry_delay_ms(
     }
     let exponential_delay = (0.5 * 2f64.powi(retry_index as i32)).min(8.0) * 1000.0;
     Ok((exponential_delay * (1.0 - rand_jitter())).max(0.0) as u64)
+}
+
+/// Parse an HTTP-date (`retry-after` date form) into milliseconds from now.
+/// Supports the three formats accepted by HTTP/1.1: RFC 1123 (IMF-fixdate),
+/// RFC 850, and asctime. Returns `None` when the value cannot be parsed.
+fn parse_http_date_ms(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let parsed = DateTime::parse_from_rfc2822(value)
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%A, %d-%b-%y %H:%M:%S GMT").map(|d| d.and_utc())
+        })
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").map(|d| d.and_utc())
+        })
+        .ok()?;
+    Some((parsed - Utc::now()).num_milliseconds() as f64)
 }
 
 /// Uniform jitter in [0, 0.25) (match TS `1 - Math.random() * 0.25`).
@@ -185,7 +204,17 @@ where
                 let retry_index = max_retries - retries_remaining;
                 retries_remaining -= 1;
                 match get_retry_delay_ms(&err, retry_index, options.max_retry_delay_ms) {
-                    Ok(delay_ms) => abortable_sleep(delay_ms, options.signal.clone()).await,
+                    Ok(delay_ms) => {
+                        abortable_sleep(delay_ms, options.signal.clone()).await;
+                        // TS's `abortableSleep` rejects on abort and the
+                        // rejection escapes the retry loop; do not send the
+                        // next request after an abort during backoff.
+                        if let Some(ref rx) = options.signal {
+                            if *rx.borrow() {
+                                return Err(err);
+                            }
+                        }
+                    }
                     Err(e) => {
                         // Server requested too long a delay — fail immediately
                         // (match TS validateServerRetryDelayMs throw).
@@ -423,6 +452,25 @@ mod tests {
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn retry_after_http_date_is_honored() {
+        let mut err = ProviderHttpError::new(Some(429), "x");
+        err.retry_after = Some((Utc::now() + chrono::Duration::seconds(2)).to_rfc2822());
+        let delay = get_retry_delay_ms(&err, 0, None).unwrap();
+        assert!(
+            (500..=3_000).contains(&delay),
+            "expected about 2s, got {delay}ms"
+        );
+    }
+
+    #[test]
+    fn unparseable_retry_after_date_behaves_like_js_nan() {
+        let mut err = ProviderHttpError::new(Some(429), "x");
+        err.retry_after = Some("not a date".to_string());
+        // TS: Date.parse -> NaN, setTimeout(NaN) -> 0.
+        assert_eq!(get_retry_delay_ms(&err, 0, None).unwrap(), 0);
+    }
+
     #[tokio::test]
     async fn abort_interrupts_retry_backoff() {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -451,6 +499,8 @@ mod tests {
         tx.send(true).unwrap();
         let err = fut.await.unwrap_err();
         assert_eq!(err.status, Some(503));
+        // The abort must stop the loop before another request is issued.
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// A server that accepts the connection but never sends response headers

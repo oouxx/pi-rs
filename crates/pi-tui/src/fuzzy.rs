@@ -47,7 +47,13 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
             // All terms are scaled by 10 so the TS fractional positional
             // penalty (`i * 0.1`) keeps its exact ordering without changing
             // the public integer score type.
-            if i > 0 && last_match_index == Some(i - 1) {
+            // TS starts `lastMatchIndex` at -1, so a match at i=0 satisfies
+            // `lastMatchIndex === i - 1` and receives the consecutive bonus.
+            let is_consecutive = match last_match_index {
+                None => i == 0,
+                Some(prev) => prev + 1 == i,
+            };
+            if is_consecutive {
                 consecutive_matches += 1;
                 score -= consecutive_matches * 50;
             } else {
@@ -88,20 +94,29 @@ fn match_query(query: &str, text: &str) -> FuzzyMatch {
 /// one contiguous run of digits, in either order. Mixed runs (`a1b2`) are not
 /// swap-eligible. Returns the swapped query (the two runs exchanged).
 fn split_alnum_swap(q: &str) -> Option<String> {
-    let bytes = q.as_bytes();
-    let first_is_letter = bytes.first()?.is_ascii_alphabetic();
-    let boundary = bytes
-        .iter()
-        .position(|b| b.is_ascii_alphabetic() != first_is_letter)?;
-    let (first, second) = q.split_at(boundary);
-    if second.is_empty()
-        || !second
-            .bytes()
-            .all(|b| b.is_ascii_alphabetic() != first_is_letter)
-    {
+    let first = q.chars().next()?;
+    let first_is_letter = first.is_ascii_alphabetic();
+    let boundary = q
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_alphabetic() != first_is_letter)
+        .map(|(i, _)| i)?;
+    let (first_run, second_run) = q.split_at(boundary);
+    if first_run.is_empty() || second_run.is_empty() {
         return None;
     }
-    Some(format!("{second}{first}"))
+    // TS `/^(?<letters>[a-z]+)(?<digits>[0-9]+)$/` (and the mirrored form):
+    // both runs must be pure letters/digits. Punctuation is not swap-eligible.
+    let valid = if first_is_letter {
+        first_run.chars().all(|c| c.is_ascii_lowercase())
+            && second_run.chars().all(|c| c.is_ascii_digit())
+    } else {
+        first_run.chars().all(|c| c.is_ascii_digit())
+            && second_run.chars().all(|c| c.is_ascii_lowercase())
+    };
+    if !valid {
+        return None;
+    }
+    Some(format!("{second_run}{first_run}"))
 }
 
 /// Port of `fuzzyMatch` (including the alphanumeric-swap fallback for
@@ -216,7 +231,23 @@ mod tests {
         assert_eq!(split_alnum_swap("gpt"), None);
         assert_eq!(split_alnum_swap("42"), None);
         assert_eq!(split_alnum_swap(""), None);
+        assert_eq!(split_alnum_swap("abc12!"), None);
+        assert_eq!(split_alnum_swap("abc1a"), None);
         assert!(!fuzzy_match("a1b2", "2b1a").matches);
+    }
+
+    /// TS awards the consecutive bonus for a first-character match too
+    /// (`lastMatchIndex` starts at -1).
+    #[test]
+    fn first_character_match_gets_consecutive_bonus() {
+        let first = fuzzy_match("a", "a");
+        let later = fuzzy_match("a", "xa");
+        assert!(
+            first.score < later.score,
+            "first-char score ({}) should beat later ({})",
+            first.score,
+            later.score
+        );
     }
 
     /// TS `isWordBoundary` uses `/[\s\-_./:]/`, so tab/newline count too.

@@ -20,8 +20,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::components::{
-    Completer, CompletionCommand, CompletionItem, CompletionRequest, CompletionTrigger, Editor,
-    Input, Markdown, SelectList,
+    Completer, CompletionCommand, CompletionInput, CompletionItem, CompletionRequest,
+    CompletionTrigger, Editor, Input, Markdown, SelectList,
 };
 use crate::render::wrap::word_wrap_line_with_joiners;
 use crate::selection::{
@@ -2041,8 +2041,14 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             // 选中项（TS 中 Tab 是"应用"，不是"下一个"；Down 才是下一个）。
             KeyCode::Tab | KeyCode::Enter => {
                 if model.completer.has_fresh_results() {
-                    if let Some(new_value) = model.completer.apply_selected(model.input.value()) {
-                        model.input.set_value(&new_value);
+                    let input = CompletionInput {
+                        value: model.input.value(),
+                        cursor_byte: model.input.cursor_pos(),
+                    };
+                    if let Some((new_value, new_cursor)) = model.completer.apply_selected(input) {
+                        model
+                            .input
+                            .set_value_preserving_pastes_with_cursor(&new_value, new_cursor);
                     }
                 }
                 model.completer.deactivate();
@@ -2128,6 +2134,14 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             // Ctrl/Alt+char chords route through the vendored readline keymap
             // (Ctrl+A/E/B/F/K/U/W/D/H, Alt+B/F/W); unmapped chords are swallowed,
             // never inserted as letters. Ctrl+B abort-bash is handled upstream.
+            // TS `tui.input.newLine` binds Ctrl+J to a newline; the readline
+            // keymap has no Ctrl+J command and would otherwise swallow it.
+            if key.code == KeyCode::Char('j')
+                && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+            {
+                model.input.insert_char('\n');
+                return vec![];
+            }
             let editing_chord = matches!(key.code, KeyCode::Char(_))
                 && key.modifiers.intersects(
                     crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
@@ -3277,6 +3291,34 @@ fn tool_renderer(b: &BlockView) -> ToolRenderer {
     }
 }
 
+/// TS `str(value)`: a JSON string is returned as-is, null/undefined become an
+/// empty string, and any other type is invalid (`[invalid arg]`).
+enum StrArg {
+    Invalid,
+    Empty,
+    Text(String),
+}
+
+fn str_arg(value: Option<&serde_json::Value>) -> StrArg {
+    match value {
+        None => StrArg::Empty,
+        Some(v) if v.is_null() => StrArg::Empty,
+        Some(v) => match v.as_str() {
+            Some(s) => StrArg::Text(s.to_string()),
+            None => StrArg::Invalid,
+        },
+    }
+}
+
+/// `file_path ?? path` (the `??` only falls back on null/undefined).
+fn file_path_arg(v: &serde_json::Value) -> StrArg {
+    let selected = v
+        .get("file_path")
+        .filter(|p| !p.is_null())
+        .or_else(|| v.get("path"));
+    str_arg(selected)
+}
+
 /// Bash `command` display arg (TS `str()` in render-utils.ts: a non-string
 /// value is invalid → `[invalid arg]`, missing/empty → `...`).
 enum BashCommandArg {
@@ -4154,13 +4196,9 @@ fn render_fallback_tool_block(
 }
 
 /// Extract `file_path ?? path`, `offset`, `limit` from the read args JSON.
-fn read_call_args(args: &str) -> (Option<String>, Option<u64>, Option<u64>) {
+fn read_call_args(args: &str) -> (StrArg, Option<u64>, Option<u64>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
-    let path = v
-        .get("file_path")
-        .and_then(|p| p.as_str())
-        .or_else(|| v.get("path").and_then(|p| p.as_str()))
-        .map(str::to_string);
+    let path = file_path_arg(&v);
     let offset = v.get("offset").and_then(|o| o.as_u64());
     let limit = v.get("limit").and_then(|l| l.as_u64());
     (path, offset, limit)
@@ -4170,15 +4208,17 @@ fn read_call_args(args: &str) -> (Option<String>, Option<u64>, Option<u64>) {
 fn read_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let (path, offset, limit) = read_call_args(&item.tool_args);
     let path_display = match path {
-        Some(p) if !p.is_empty() => shorten_path(&p, &item.cwd),
-        _ => "...".to_string(),
+        StrArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        StrArg::Empty => Span::styled("...", Style::new().fg(t.tool_output)),
+        StrArg::Text(p) => Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.accent)),
     };
     let mut spans = vec![
         Span::styled(
             "read",
             Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {path_display}"), Style::new().fg(t.accent)),
+        Span::raw(" "),
+        path_display,
     ];
     if offset.is_some() || limit.is_some() {
         let start_line = offset.unwrap_or(1);
@@ -4270,31 +4310,34 @@ fn render_read_tool_block(
 fn grep_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let v: serde_json::Value =
         serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
-    let pattern = v
-        .get("pattern")
-        .and_then(|p| p.as_str())
-        .map(str::to_string);
-    let path = v
-        .get("path")
-        .and_then(|p| p.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| ".".to_string());
+    let pattern_arg = str_arg(v.get("pattern"));
+    let path_arg = str_arg(v.get("path"));
     let glob = v.get("glob").and_then(|g| g.as_str()).map(str::to_string);
     let limit = v.get("limit").and_then(|l| l.as_u64());
 
+    let pattern_display = match pattern_arg {
+        StrArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        StrArg::Empty => Span::styled("//", Style::new().fg(t.accent)),
+        StrArg::Text(p) => Span::styled(format!("/{p}/"), Style::new().fg(t.accent)),
+    };
+    let path_text = match path_arg {
+        StrArg::Invalid => None,
+        StrArg::Empty => Some(".".to_string()),
+        StrArg::Text(p) if p.is_empty() => Some(".".to_string()),
+        StrArg::Text(p) => Some(p),
+    };
     let mut spans = vec![
         Span::styled(
             "grep",
             Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" /{}/", pattern.unwrap_or_default()),
-            Style::new().fg(t.accent),
-        ),
-        Span::styled(
-            format!(" in {}", shorten_path(&path, &item.cwd)),
-            Style::new().fg(t.tool_output),
-        ),
+        Span::raw(" "),
+        pattern_display,
+        Span::styled(" in ", Style::new().fg(t.tool_output)),
+        match path_text {
+            Some(p) => Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.tool_output)),
+            None => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        },
     ];
     if let Some(g) = glob {
         spans.push(Span::styled(
@@ -4599,21 +4642,18 @@ fn write_content_height(b: &BlockView, expanded: bool, wrap_w: usize) -> u16 {
 fn edit_title_line(item: &BlockView, t: &Theme) -> Line<'static> {
     let v: serde_json::Value =
         serde_json::from_str(&item.tool_args).unwrap_or(serde_json::Value::Null);
-    let path = v
-        .get("file_path")
-        .and_then(|p| p.as_str())
-        .or_else(|| v.get("path").and_then(|p| p.as_str()))
-        .map(str::to_string)
-        .unwrap_or_else(|| "...".to_string());
+    let path_display = match file_path_arg(&v) {
+        StrArg::Invalid => Span::styled("[invalid arg]", Style::new().fg(t.error)),
+        StrArg::Empty => Span::styled("...", Style::new().fg(t.tool_output)),
+        StrArg::Text(p) => Span::styled(shorten_path(&p, &item.cwd), Style::new().fg(t.accent)),
+    };
     Line::from(vec![
         Span::styled(
             "edit",
             Style::new().fg(t.tool_title).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {}", shorten_path(&path, &item.cwd)),
-            Style::new().fg(t.accent),
-        ),
+        Span::raw(" "),
+        path_display,
     ])
 }
 
@@ -5132,7 +5172,10 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         }
         if u.cache_read > 0 || u.cache_write > 0 {
             if let Some(rate) = u.cache_hit_rate {
-                push_part(&mut left_spans, format!("CH{rate:.1}%"));
+                push_part(
+                    &mut left_spans,
+                    format!("CH{}%", crate::text_utils::to_fixed(rate, 1)),
+                );
             }
         }
         if u.cost > 0.0 || model.using_subscription {
@@ -5141,7 +5184,10 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
             } else {
                 ""
             };
-            push_part(&mut left_spans, format!("${:.3}{sub}", u.cost));
+            push_part(
+                &mut left_spans,
+                format!("${}{sub}", crate::text_utils::to_fixed(u.cost, 3)),
+            );
         }
         // Context display: `{pct}%/{window} (auto)` — colorized by
         // threshold (error >90, warning >70), `?/{window}` when unknown.
@@ -5156,7 +5202,7 @@ fn render_footer(model: &Model, frame: &mut Frame, area: Rect, t: &Theme) {
         let window = footer_tokens(model.context_window);
         let auto = if model.auto_compact { " (auto)" } else { "" };
         let ctx_display = if model.context_usage_known {
-            format!("{pct:.1}%/{window}{auto}")
+            format!("{}%/{window}{auto}", crate::text_utils::to_fixed(pct, 1))
         } else {
             format!("?/{window}{auto}")
         };
@@ -5402,13 +5448,7 @@ fn panel_height(panel: &PanelState) -> u16 {
     (height as u16).max(7)
 }
 
-fn render_panel(
-    panel: &PanelState,
-    model: &mut Model,
-    frame: &mut Frame,
-    rect: Rect,
-    t: &Theme,
-) {
+fn render_panel(panel: &PanelState, model: &mut Model, frame: &mut Frame, rect: Rect, t: &Theme) {
     frame.render_widget(Clear, rect);
     // TS `DynamicBorder`: only a top and bottom accent rule, no side borders.
     frame.render_widget(
@@ -5438,7 +5478,10 @@ fn render_panel(
     lines.push(Line::from(""));
     if panel.items.is_empty() {
         lines.push(Line::from(Span::styled(
-            panel.empty.clone().unwrap_or_else(|| "Nothing to show.".to_string()),
+            panel
+                .empty
+                .clone()
+                .unwrap_or_else(|| "Nothing to show.".to_string()),
             Style::new().fg(t.muted),
         )));
     } else {
@@ -5464,7 +5507,11 @@ fn render_panel(
                 format!("{:<label_width$}", item.label),
                 Style::new()
                     .fg(if selected { t.accent } else { t.text })
-                    .add_modifier(if selected { Modifier::BOLD } else { Modifier::empty() }),
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
             ));
             if let Some(description) = &item.description {
                 if !description.is_empty() {
@@ -5494,7 +5541,9 @@ fn render_panel(
     let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
     frame.render_widget(Paragraph::new(lines), inner);
     if let (Some(input), Some(line_index)) = (&panel.input, input_line) {
-        let x = inner.x.saturating_add(2 + input.value.chars().count() as u16);
+        let x = inner
+            .x
+            .saturating_add(2 + input.value.chars().count() as u16);
         let y = inner.y.saturating_add(line_index as u16);
         model.cursor_pos = Some((x, y));
         frame.set_cursor_position((x, y));

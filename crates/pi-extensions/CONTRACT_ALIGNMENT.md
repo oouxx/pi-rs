@@ -62,3 +62,4 @@
 | 连接失败 | `Could not connect to Ollama at {host}. Make sure Ollama is running and {tool} is enabled.` | Ollama 同左；DeepSeek 为 `Could not connect to DeepSeek at {base}. Check your network connection or DEEPSEEK_BASE_URL.` | 是（Ollama） | DEVIATIONS.md |
 | 超时 | 无显式超时 | 60s 超时后返回 `{tool} request to {label} at {endpoint} timed out after 60s.` | 否（有意增强） | DEVIATIONS.md |
 | 后端选择 | 固定 Ollama | settings `webSearch` / 环境变量（`PI_WEB_SEARCH_PROVIDER` 等），优先级 settings → env → 默认 | 否（新增） | DEVIATIONS.md |
+| subagent bash 预览 / `$cost` | UTF-16 截断；`toFixed(4)` | `utf16_len`/`truncate_utf16`/`to_fixed(4)` | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |

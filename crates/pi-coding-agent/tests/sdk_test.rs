@@ -415,6 +415,7 @@ fn make_openrouter_stream_fn(api_key: &str) -> StreamFn {
                                     raw_stop_reason: None,
                                     end_turn: None,
                                     timestamp: 0,
+                                    deferred: None,
                                 }),
                             },
                         },
@@ -484,6 +485,8 @@ fn convert_msg(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: msg.timestamp,
+
+        deferred: None,
     }
 }
 

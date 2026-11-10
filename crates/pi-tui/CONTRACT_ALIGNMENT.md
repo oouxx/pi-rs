@@ -104,3 +104,16 @@
 | 终端亮/暗检测 | TS `getThemeForRgbColor`（luminance ≥ 0.5）+ `detectTerminalBackgroundFromEnv` | `detect.rs` 同阈值 + 同 COLORFGBG 解析 | 是 | 注意这是基线版本语义；TS 后续版本改为 WCAG/`terminalAppearance`，超出当前基准 |
 | 自定义主题加载 / 主题列表 / 热重载 | `loadThemeFromPath` / `getAvailableThemes` / `startThemeWatcher` | 无（`get_custom_themes_dir()` 已定义但未接线，无 `dark.json`/`light.json` 文件） | 否 | 主题加载/选择器未移植（见 DEVIATIONS.md） |
 | `/theme` 命令 | 打开设置选择器，可切任意主题 + `onThemeChange`/`onThemePreview` | `/theme [dark\|light]` 前缀匹配切换 / 无参 toggle | 否 | 选择器未移植（见 DEVIATIONS.md） |
+
+## 补全 / 输入（2026-11-10）
+
+| 行为场景 | TS 版本行为 | Rust 版本行为 | 是否一致 | 差异原因（如有） |
+| -------- | ----------- | ------------- | -------- | ---------------- |
+| 补全应用 | `applyCompletion` 保留光标后的文本并返回新光标列；slash 加空格、`@` 文件加空格/目录不加、参数不加 | `CompletionInput{value,cursor_byte}` + `apply_completion` 返回 `(String, usize)`；`Input::set_value_preserving_pastes_with_cursor` | 是（2026-11-10） | 公开签名变化见 `PORTING_MISTAKES.md` #39 |
+| Tab 强制路径补全 | 非 `@` 前缀走 readdir `getFileSuggestions` | `parse_path_prefix` 的 `is_at` 不再被 `force` 覆盖 | 是（2026-11-10） | #33 |
+| Ctrl+J | `tui.input.newLine` 插入换行 | 在 readline chord 之前拦截并插入 `\n` | 是（2026-11-10） | #32 |
+| SelectList 可视行数 | 构造参数 `maxVisible`，以选中项居中 | `with_max_visible`（默认 5），渲染时限制高度并设置 offset | 是（2026-11-10） | #34 |
+| 无效工具参数 | `str()` 对非字符串返回 null → `[invalid arg]` | `StrArg` 区分 Invalid/Empty/Text，read/edit/grep 标题按 TS 渲染 | 是（2026-11-10） | #36 |
+| footer 数值 | `toFixed(1/3)`，精确 tie 远离零 | `text_utils::to_fixed` | 是（2026-11-10） | #37 |
+| 模糊文件排序 | score → 深度 → 长度 → localeCompare | 同左（字符串比较为字节序） | 是（ASCII 路径） | #35 |
+| 模糊匹配首字符 | 首字符命中获得 consecutive bonus | 同左 | 是（2026-11-10） | #31 |

@@ -32,21 +32,29 @@ pub struct ColumnWidths {
 pub fn format_token_count(count: u64) -> String {
     if count >= 1_000_000 {
         let mill = count as f64 / 1_000_000.0;
-        if mill.fract() < 0.05 {
+        if mill.fract() == 0.0 {
             format!("{}M", mill as u64)
         } else {
-            format!("{:.1}M", mill)
+            format!("{}M", pi_coding_agent::pi_ai_types::to_fixed(mill, 1))
         }
     } else if count >= 1_000 {
         let k = count as f64 / 1_000.0;
-        if k.fract() < 0.05 {
+        if k.fract() == 0.0 {
             format!("{}K", k as u64)
         } else {
-            format!("{:.1}K", k)
+            format!("{}K", pi_coding_agent::pi_ai_types::to_fixed(k, 1))
         }
     } else {
         count.to_string()
     }
+}
+
+/// Approximate JS `String.prototype.localeCompare` for the ASCII provider/id
+/// strings in the catalog.
+fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| a.cmp(b))
 }
 
 /// Calculate column widths for the table based on model data,
@@ -85,10 +93,9 @@ pub fn calculate_column_widths(models: &[Model]) -> ColumnWidths {
 /// (not name). Results are sorted by provider then by id.
 /// Returns `EXIT_SUCCESS` (0) or `EXIT_FAILURE` (1).
 pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<&str>) -> i32 {
-    // NOTE: unlike TS (which lists only models with configured auth via
-    // `get_available()`), this lists ALL known models via `get_models()` to aid
-    // discovery.
-    let all_models = model_registry.get_models();
+    // TS `modelRuntime.getAvailable()`: only models whose provider has
+    // configured auth, not every model in the catalog.
+    let all_models = model_registry.get_available();
 
     if all_models.is_empty() {
         // TS `listModels`: stdout + exit 0, with the login guidance.
@@ -128,8 +135,11 @@ pub async fn list_models(model_registry: &ModelRegistry, search_pattern: Option<
         return EXIT_SUCCESS;
     }
 
-    // Sort by provider then by id
-    matched.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
+    // Sort by provider then by id (JS `localeCompare`; ASCII ids are
+    // compared case-insensitively first, then by the original spelling).
+    matched.sort_by(|a, b| {
+        locale_cmp(&a.provider, &b.provider).then_with(|| locale_cmp(&a.id, &b.id))
+    });
 
     let widths = calculate_column_widths(&matched);
 
@@ -214,8 +224,12 @@ mod tests {
     #[test]
     fn test_format_token_count_millions() {
         assert_eq!(format_token_count(1_000_000), "1M");
-        assert_eq!(format_token_count(1_048_576), "1M");
+        assert_eq!(format_token_count(1_048_576), "1.0M");
         assert_eq!(format_token_count(1_500_000), "1.5M");
+        // TS `millions % 1 === 0 ? integer : toFixed(1)`: 1.04M is not an
+        // integer multiple, so it keeps one decimal.
+        assert_eq!(format_token_count(1_040_000), "1.0M");
+        assert_eq!(format_token_count(1_250_000), "1.3M");
     }
 
     #[test]

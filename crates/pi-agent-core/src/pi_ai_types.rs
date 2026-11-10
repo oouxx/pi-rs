@@ -3,6 +3,8 @@
 //! All AI-related types live in the pi-ai crate. This module re-exports
 //! them directly, plus adds a few pi-agent-core-specific types and helpers.
 
+pub use pi_ai::utils::text::to_fixed;
+
 pub use pi_ai::env_api_keys::{
     find_env_keys, get_api_key_env_vars, get_env_api_key, get_provider_env_value, ProviderEnv,
 };
@@ -125,6 +127,8 @@ pub fn assistant_message(
         raw_stop_reason: None,
         end_turn: None,
         timestamp,
+
+        deferred: None,
     }
 }
 
@@ -155,6 +159,8 @@ pub fn assistant_message_error(
         raw_stop_reason: None,
         end_turn: None,
         timestamp,
+
+        deferred: None,
     }
 }
 

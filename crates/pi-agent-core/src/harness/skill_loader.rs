@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::harness::types::{ExecutionEnv, FileInfoType, Skill};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
@@ -13,11 +14,22 @@ pub struct SkillDiagnostic {
     pub path: String,
 }
 
-/// A simple ignore matcher that checks if a path matches any ignore pattern.
-/// Uses gitignore-style pattern matching.
-#[derive(Debug, Clone, Default)]
+/// Gitignore-style matcher (v0.87.1 uses the `ignore` npm package, i.e. full
+/// gitignore semantics: `**`, anchored patterns, directory-only patterns and
+/// last-match-wins negation).
+#[derive(Debug, Clone)]
 struct IgnoreMatcher {
     patterns: Vec<String>,
+    matcher: Gitignore,
+}
+
+impl Default for IgnoreMatcher {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            matcher: Gitignore::empty(),
+        }
+    }
 }
 
 impl IgnoreMatcher {
@@ -27,51 +39,25 @@ impl IgnoreMatcher {
 
     fn add_patterns(&mut self, patterns: &[String]) {
         self.patterns.extend(patterns.iter().cloned());
+        self.rebuild();
+    }
+
+    fn rebuild(&mut self) {
+        let mut builder = GitignoreBuilder::new("");
+        for pattern in &self.patterns {
+            let _ = builder.add_line(None, pattern);
+        }
+        if let Ok(matcher) = builder.build() {
+            self.matcher = matcher;
+        }
     }
 
     fn ignores(&self, path: &str) -> bool {
-        // Last matching pattern wins, so `!pattern` un-ignores a path
-        // (gitignore semantics; v0.87.1 uses the `ignore` crate).
-        let mut ignored = false;
-        for pattern in &self.patterns {
-            let trimmed = pattern.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let negated = trimmed.starts_with('!');
-            if self.match_pattern(path, trimmed) {
-                ignored = !negated;
-            }
-        }
-        ignored
-    }
-
-    fn match_pattern(&self, path: &str, pattern: &str) -> bool {
-        let trimmed = pattern.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            return false;
-        }
-        let negated = trimmed.starts_with('!');
-        let pat = if negated { &trimmed[1..] } else { trimmed };
-        let pat = pat.strip_prefix('/').unwrap_or(pat);
-
-        // Simple glob matching: check if path contains the pattern
-        // or if the pattern matches the basename
-        if pat.contains('*') {
-            let prefix = pat.trim_end_matches('*');
-            let suffix = pat.trim_start_matches('*');
-            if pat.starts_with('*') && pat.ends_with('*') {
-                path.contains(suffix)
-            } else if pat.ends_with('*') {
-                path.starts_with(prefix)
-            } else if pat.starts_with('*') {
-                path.ends_with(suffix)
-            } else {
-                path == pat
-            }
-        } else {
-            path == pat || path.ends_with(&format!("/{pat}"))
-        }
+        let is_dir = path.ends_with('/');
+        let relative = path.trim_end_matches('/');
+        self.matcher
+            .matched_path_or_any_parents(relative, is_dir)
+            .is_ignore()
     }
 }
 
@@ -601,11 +587,11 @@ fn validate_name(name: &str, parent_dir_name: &str) -> Vec<String> {
             name, parent_dir_name
         ));
     }
-    if name.len() > MAX_NAME_LENGTH {
+    if pi_ai::utils::text::utf16_len(name) > MAX_NAME_LENGTH {
         errors.push(format!(
             "name exceeds {} characters ({})",
             MAX_NAME_LENGTH,
-            name.len()
+            pi_ai::utils::text::utf16_len(name)
         ));
     }
     if !name
@@ -631,11 +617,11 @@ fn validate_description(description: Option<&str>) -> Vec<String> {
         None | Some("") => {
             errors.push("description is required".to_string());
         }
-        Some(d) if d.len() > MAX_DESCRIPTION_LENGTH => {
+        Some(d) if pi_ai::utils::text::utf16_len(d) > MAX_DESCRIPTION_LENGTH => {
             errors.push(format!(
                 "description exceeds {} characters ({})",
                 MAX_DESCRIPTION_LENGTH,
-                d.len()
+                pi_ai::utils::text::utf16_len(d)
             ));
         }
         _ => {}
@@ -744,5 +730,20 @@ mod tests {
         matcher.add_patterns(&["*.md".to_string(), "!keep.md".to_string()]);
         assert!(matcher.ignores("drop.md"));
         assert!(!matcher.ignores("keep.md"));
+    }
+
+    #[test]
+    fn gitignore_semantics_handle_double_star_and_directories() {
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_patterns(&[
+            "build/".to_string(),
+            "**/generated/**".to_string(),
+            "!**/generated/keep.md".to_string(),
+        ]);
+        assert!(matcher.ignores("build/"));
+        assert!(matcher.ignores("nested/build/"));
+        assert!(matcher.ignores("a/generated/skill.md"));
+        assert!(!matcher.ignores("a/generated/keep.md"));
+        assert!(!matcher.ignores("src/skill.md"));
     }
 }

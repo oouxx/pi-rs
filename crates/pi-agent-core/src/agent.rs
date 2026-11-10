@@ -1337,6 +1337,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1000,
+
+            deferred: None,
         }
     }
 
@@ -1380,6 +1382,8 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 1000,
+
+                        deferred: None,
                     },
                     reason: StopReason::Error,
                 });
@@ -1926,6 +1930,8 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 1000,
+
+                        deferred: None,
                     };
                     let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
                     // Watch the abort signal in a spawned task
@@ -1949,6 +1955,8 @@ mod tests {
                                         raw_stop_reason: None,
                                         end_turn: None,
                                         timestamp: 1000,
+
+                                        deferred: None,
                                     },
                                     reason: StopReason::Aborted,
                                 });
@@ -2254,6 +2262,7 @@ mod tests {
                             raw_stop_reason: None,
                             end_turn: None,
                             timestamp: 0,
+                            deferred: None,
                         };
                         out.content.push(ContentBlock::Text {
                             text: "aborted".into(),
@@ -2402,6 +2411,8 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 1000,
+
+                        deferred: None,
                     };
                     let _ = tx.send(AssistantMessageEvent::Start { partial: start_msg });
                     // Watch the abort signal in a spawned task
@@ -2425,6 +2436,8 @@ mod tests {
                                         raw_stop_reason: None,
                                         end_turn: None,
                                         timestamp: 1000,
+
+                                        deferred: None,
                                     },
                                     reason: StopReason::Aborted,
                                 });
@@ -2508,6 +2521,8 @@ mod tests {
                             raw_stop_reason: None,
                             end_turn: None,
                             timestamp: 1000,
+
+                            deferred: None,
                         };
                         let _ = tx.send(AssistantMessageEvent::Done {
                             message: msg,
@@ -2530,6 +2545,8 @@ mod tests {
                             raw_stop_reason: None,
                             end_turn: None,
                             timestamp: 1000,
+
+                            deferred: None,
                         };
                         let _ = tx.send(AssistantMessageEvent::Done {
                             message: msg,
@@ -2688,6 +2705,8 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 1000,
+
+                        deferred: None,
                     };
                     let _ = tx.send(AssistantMessageEvent::Done {
                         message: msg,
@@ -2878,6 +2897,8 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 1000,
+
+                        deferred: None,
                     };
                     let _ = tx.send(AssistantMessageEvent::Done {
                         message: msg,

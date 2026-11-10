@@ -36,7 +36,11 @@ pub enum McpUiEvent {
     /// The sign-in flow produced an authorization URL.
     SignInUrl { name: String, url: String },
     /// The sign-in flow finished.
-    SignInDone { name: String, message: String, ok: bool },
+    SignInDone {
+        name: String,
+        message: String,
+        ok: bool,
+    },
     /// Configuration was reloaded after an enable/disable change.
     ConfigChanged { name: String, message: String },
 }
@@ -138,11 +142,7 @@ pub enum McpKeyResult {
 
 impl McpUiState {
     /// Load configuration and start connecting enabled servers.
-    pub fn new(
-        cwd: String,
-        agent_dir: String,
-        ui_tx: UnboundedSender<UiAction>,
-    ) -> Self {
+    pub fn new(cwd: String, agent_dir: String, ui_tx: UnboundedSender<UiAction>) -> Self {
         Self::new_with_connections(cwd, agent_dir, ui_tx, Vec::new())
     }
 
@@ -173,7 +173,14 @@ impl McpUiState {
                         if state != McpServerState::Connected {
                             spawn_connect(Arc::clone(&connection), ui_tx.clone());
                         }
-                        (Some(connection), state, error, tools, has_resources, instructions)
+                        (
+                            Some(connection),
+                            state,
+                            error,
+                            tools,
+                            has_resources,
+                            instructions,
+                        )
                     } else {
                         let connection = Arc::new(McpServerConnection::with_agent_dir(
                             entry.clone(),
@@ -227,7 +234,8 @@ impl McpUiState {
             return;
         };
         if self.find(name).is_none() {
-            self.config_errors.push(format!("No MCP server named \"{name}\"."));
+            self.config_errors
+                .push(format!("No MCP server named \"{name}\"."));
             self.screen = Screen::Servers;
             return;
         }
@@ -294,7 +302,10 @@ impl McpUiState {
                 .map(server_actions)
                 .map(|actions| actions.len())
                 .unwrap_or(0),
-            Screen::Tools(name) => self.find(name).map(|server| server.tools.len()).unwrap_or(0),
+            Screen::Tools(name) => self
+                .find(name)
+                .map(|server| server.tools.len())
+                .unwrap_or(0),
             Screen::Exposure(_) => 4,
             Screen::SignIn(_) => 0,
         }
@@ -371,16 +382,17 @@ impl McpUiState {
             .collect();
         let mut details = vec![
             describe_transport(&server.entry),
-            format!("{}: {}", server.entry.scope.as_str(), server.entry.source.display()),
+            format!(
+                "{}: {}",
+                server.entry.scope.as_str(),
+                server.entry.source.display()
+            ),
             format!("State: {}", state_summary(server)),
         ];
         if let Some(override_path) = &server.entry.override_path {
             details.push(format!("Project override: {}", override_path.display()));
         }
-        let error = server
-            .message
-            .clone()
-            .or_else(|| server.error.clone());
+        let error = server.message.clone().or_else(|| server.error.clone());
         PanelState {
             title: format!("MCP server {name}"),
             details,
@@ -504,11 +516,7 @@ impl McpUiState {
     }
 
     /// Handle one key press.
-    pub fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        ui_tx: &UnboundedSender<UiAction>,
-    ) -> McpKeyResult {
+    pub fn handle_key(&mut self, key: KeyEvent, ui_tx: &UnboundedSender<UiAction>) -> McpKeyResult {
         if matches!(self.screen, Screen::SignIn(_)) {
             return self.handle_sign_in_key(key);
         }
@@ -754,11 +762,7 @@ impl McpUiState {
                 }
                 Err(error) => format!("Sign-in failed: {error}"),
             };
-            let _ = ui_tx.send(UiAction::Mcp(McpUiEvent::SignInDone {
-                name,
-                message,
-                ok,
-            }));
+            let _ = ui_tx.send(UiAction::Mcp(McpUiEvent::SignInDone { name, message, ok }));
         });
     }
 
@@ -992,10 +996,7 @@ impl McpUiState {
     }
 }
 
-fn spawn_connect(
-    connection: Arc<McpServerConnection>,
-    ui_tx: UnboundedSender<UiAction>,
-) {
+fn spawn_connect(connection: Arc<McpServerConnection>, ui_tx: UnboundedSender<UiAction>) {
     tokio::spawn(async move {
         let state = match connection.get_client().await {
             Ok(_) => McpServerState::Connected,
@@ -1036,8 +1037,8 @@ fn server_actions(server: &ServerUi) -> Vec<ServerAction> {
     } else {
         format!("saved to the {} mcp.json", server.entry.scope.as_str())
     };
-    let in_project = server.entry.scope.as_str() == "global"
-        && server.entry.override_path.is_none();
+    let in_project =
+        server.entry.scope.as_str() == "global" && server.entry.override_path.is_none();
     let mut actions = Vec::new();
     if !server.enabled() {
         actions.push(ServerAction {
@@ -1206,8 +1207,16 @@ mod tests {
         let panel = state().panel();
         assert_eq!(panel.title, "MCP servers");
         assert_eq!(panel.items.len(), 2);
-        assert!(panel.items[0].description.as_deref().unwrap().contains("connected"));
-        assert!(panel.items[0].description.as_deref().unwrap().contains("codemode"));
+        assert!(panel.items[0]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("connected"));
+        assert!(panel.items[0]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("codemode"));
     }
 
     #[test]
@@ -1221,7 +1230,10 @@ mod tests {
         state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
         assert_eq!(state.screen, Screen::Exposure("docs".to_string()));
         let panel = state.panel();
-        assert!(panel.items.iter().any(|item| item.label.starts_with("✓ codemode")));
+        assert!(panel
+            .items
+            .iter()
+            .any(|item| item.label.starts_with("✓ codemode")));
     }
 
     #[test]

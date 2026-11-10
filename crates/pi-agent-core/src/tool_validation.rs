@@ -9,10 +9,12 @@
 //! This module implements the keywords the built-in and extension tools use:
 //! `type` (including unions), `enum`, `const`, `properties`/`required`,
 //! `additionalProperties`, `items` (single schema and tuple),
-//! `anyOf`/`oneOf`/`allOf`. `format`/`pattern`/`minimum`/`maximum` are not
-//! enforced yet; that gap is recorded in `DEVIATIONS.md`.
+//! `anyOf`/`oneOf`/`allOf`, plus string/number constraints
+//! (`format`/`pattern`/`minLength`/`maxLength`/`minimum`/`maximum`/...).
 
 use serde_json::{Map, Value};
+
+use pi_ai::utils::text::utf16_len;
 
 /// Coerce and validate `args` against `schema`.
 ///
@@ -91,9 +93,7 @@ fn coerce_primitive(value: &Value, ty: &str) -> Option<Value> {
         },
         "integer" => match value {
             Value::Null => Some(Value::from(0)),
-            Value::String(s) if !s.trim().is_empty() => {
-                s.parse::<i64>().ok().map(Value::from)
-            }
+            Value::String(s) if !s.trim().is_empty() => s.parse::<i64>().ok().map(Value::from),
             Value::Bool(b) => Some(Value::from(if *b { 1 } else { 0 })),
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
@@ -101,9 +101,7 @@ fn coerce_primitive(value: &Value, ty: &str) -> Option<Value> {
                 } else if let Some(u) = n.as_u64() {
                     Some(Value::from(u))
                 } else {
-                    n.as_f64()
-                        .filter(|f| f.fract() == 0.0)
-                        .map(Value::from)
+                    n.as_f64().filter(|f| f.fract() == 0.0).map(Value::from)
                 }
             }
             _ => None,
@@ -174,14 +172,19 @@ fn coerce_and_validate(value: &Value, schema: &Value, path: &str) -> Result<Valu
     let types = schema_types(schema);
     if types.is_empty() {
         if schema.get("properties").is_some() {
-            return validate_object(&current, schema, path);
+            let value = validate_object(&current, schema, path)?;
+            validate_keywords(&value, schema, path)?;
+            return Ok(value);
         }
+        validate_keywords(&current, schema, path)?;
         return Ok(current);
     }
 
     // The value already matches one of the allowed types: validate it as-is.
     if types.iter().any(|ty| matches_json_type(&current, ty)) {
-        return validate_typed(&current, schema, &types, path);
+        let value = validate_typed(&current, schema, &types, path)?;
+        validate_keywords(&value, schema, path)?;
+        return Ok(value);
     }
 
     // Otherwise try the same primitive coercions TypeBox applies.
@@ -190,7 +193,10 @@ fn coerce_and_validate(value: &Value, schema: &Value, path: &str) -> Result<Valu
         if let Some(coerced) = coerce_primitive(&current, ty) {
             if matches_json_type(&coerced, ty) {
                 match validate_typed(&coerced, schema, &types, path) {
-                    Ok(value) => return Ok(value),
+                    Ok(value) => {
+                        validate_keywords(&value, schema, path)?;
+                        return Ok(value);
+                    }
                     Err(error) => errors.push(error),
                 }
             }
@@ -204,7 +210,12 @@ fn coerce_and_validate(value: &Value, schema: &Value, path: &str) -> Result<Valu
         .unwrap_or_else(|| format!("{}: invalid value", path_or_root(path))))
 }
 
-fn coerce_union(value: &Value, variants: &[Value], path: &str, keyword: &str) -> Result<Value, String> {
+fn coerce_union(
+    value: &Value,
+    variants: &[Value],
+    path: &str,
+    keyword: &str,
+) -> Result<Value, String> {
     // Prefer a variant that validates without changing the value, then fall
     // back to coercion (same order as TS `coerceWithUnionSchema`).
     for variant in variants {
@@ -226,7 +237,159 @@ fn coerce_union(value: &Value, variants: &[Value], path: &str, keyword: &str) ->
     ))
 }
 
-fn validate_typed(value: &Value, schema: &Value, types: &[String], path: &str) -> Result<Value, String> {
+/// Enforce the JSON Schema keywords TypeBox validates but coercion alone does
+/// not: `pattern`/`format`, string length, numeric bounds, and
+/// array/object size constraints.
+fn validate_keywords(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
+    let at = path_or_root(path);
+
+    if let Some(s) = value.as_str() {
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+            // TypeBox compiles the pattern as a JS RegExp. The Rust regex
+            // crate covers the common subset; an unsupported pattern is
+            // treated as non-matching rather than crashing.
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if !re.is_match(s) {
+                    return Err(format!("{at}: must match pattern {pattern}"));
+                }
+            }
+        }
+        if let Some(format) = schema.get("format").and_then(Value::as_str) {
+            if !matches_format(s, format) {
+                return Err(format!("{at}: must match format {format}"));
+            }
+        }
+        if let Some(min) = schema.get("minLength").and_then(Value::as_u64) {
+            if utf16_len(s) < min as usize {
+                return Err(format!("{at}: must have at least {min} characters"));
+            }
+        }
+        if let Some(max) = schema.get("maxLength").and_then(Value::as_u64) {
+            if utf16_len(s) > max as usize {
+                return Err(format!("{at}: must have at most {max} characters"));
+            }
+        }
+    }
+
+    if let Some(n) = value.as_f64() {
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
+            let exclusive = schema
+                .get("exclusiveMinimum")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if (exclusive && n <= minimum) || (!exclusive && n < minimum) {
+                return Err(format!(
+                    "{at}: must be {}{minimum}",
+                    if exclusive { ">" } else { ">=" }
+                ));
+            }
+        }
+        if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64) {
+            let exclusive = schema
+                .get("exclusiveMaximum")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if (exclusive && n >= maximum) || (!exclusive && n > maximum) {
+                return Err(format!(
+                    "{at}: must be {}{maximum}",
+                    if exclusive { "<" } else { "<=" }
+                ));
+            }
+        }
+        if let Some(minimum) = schema.get("exclusiveMinimum").and_then(Value::as_f64) {
+            if n <= minimum {
+                return Err(format!("{at}: must be > {minimum}"));
+            }
+        }
+        if let Some(maximum) = schema.get("exclusiveMaximum").and_then(Value::as_f64) {
+            if n >= maximum {
+                return Err(format!("{at}: must be < {maximum}"));
+            }
+        }
+        if let Some(multiple) = schema.get("multipleOf").and_then(Value::as_f64) {
+            if multiple > 0.0 {
+                let quotient = n / multiple;
+                if (quotient - quotient.round()).abs() > 1e-9 {
+                    return Err(format!("{at}: must be a multiple of {multiple}"));
+                }
+            }
+        }
+    }
+
+    if let Some(items) = value.as_array() {
+        if let Some(min) = schema.get("minItems").and_then(Value::as_u64) {
+            if items.len() < min as usize {
+                return Err(format!("{at}: must have at least {min} items"));
+            }
+        }
+        if let Some(max) = schema.get("maxItems").and_then(Value::as_u64) {
+            if items.len() > max as usize {
+                return Err(format!("{at}: must have at most {max} items"));
+            }
+        }
+    }
+
+    if let Some(obj) = value.as_object() {
+        if let Some(min) = schema.get("minProperties").and_then(Value::as_u64) {
+            if obj.len() < min as usize {
+                return Err(format!("{at}: must have at least {min} properties"));
+            }
+        }
+        if let Some(max) = schema.get("maxProperties").and_then(Value::as_u64) {
+            if obj.len() > max as usize {
+                return Err(format!("{at}: must have at most {max} properties"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Format checks for the formats used by built-in/extension tool schemas.
+/// Unknown formats are accepted (TypeBox ignores unregistered formats).
+fn matches_format(value: &str, format: &str) -> bool {
+    match format {
+        "email" => {
+            let Some((local, domain)) = value.split_once('@') else {
+                return false;
+            };
+            !local.is_empty()
+                && !domain.is_empty()
+                && !value.chars().any(char::is_whitespace)
+                && domain.contains('.')
+        }
+        "uri" | "url" | "uri-reference" => reqwest::Url::parse(value).is_ok(),
+        "date-time" => chrono::DateTime::parse_from_rfc3339(value).is_ok(),
+        "date" => chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+        "time" => chrono::NaiveTime::parse_from_str(value, "%H:%M:%S%.f").is_ok(),
+        "uuid" => uuid::Uuid::parse_str(value).is_ok(),
+        "ipv4" => value
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_ipv4()),
+        "ipv6" => value
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_ipv6()),
+        "hostname" => {
+            !value.is_empty()
+                && value.len() <= 253
+                && value.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                })
+        }
+        _ => true,
+    }
+}
+
+fn validate_typed(
+    value: &Value,
+    schema: &Value,
+    types: &[String],
+    path: &str,
+) -> Result<Value, String> {
     if types.iter().any(|ty| ty == "object") && value.is_object() {
         return validate_object(value, schema, path);
     }
@@ -443,15 +606,13 @@ mod tests {
 
     #[test]
     fn validates_nested_objects_and_arrays() {
-        let error = validate_tool_arguments(
-            &schema(),
-            &json!({ "path": "x", "nested": { "name": 3 } }),
-        )
-        .unwrap();
+        let error =
+            validate_tool_arguments(&schema(), &json!({ "path": "x", "nested": { "name": 3 } }))
+                .unwrap();
         assert_eq!(error["nested"]["name"], json!("3"));
 
-        let error = validate_tool_arguments(&schema(), &json!({ "path": "x", "nested": {} }))
-            .unwrap_err();
+        let error =
+            validate_tool_arguments(&schema(), &json!({ "path": "x", "nested": {} })).unwrap_err();
         assert!(error.contains("nested.name"), "{error}");
     }
 
@@ -477,5 +638,57 @@ mod tests {
         });
         let validated = validate_tool_arguments(&schema, &json!({ "value": null })).unwrap();
         assert!(validated["value"].is_null());
+    }
+
+    #[test]
+    fn enforces_pattern_and_length_keywords() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "slug": { "type": "string", "pattern": "^[a-z-]+$", "minLength": 2, "maxLength": 5 }
+            }
+        });
+        assert!(validate_tool_arguments(&schema, &json!({ "slug": "ok" })).is_ok());
+        assert!(validate_tool_arguments(&schema, &json!({ "slug": "Bad" })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "slug": "a" })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "slug": "abcdef" })).is_err());
+    }
+
+    #[test]
+    fn enforces_numeric_bounds_and_multiple_of() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": "number", "minimum": 0, "maximum": 10, "multipleOf": 0.5 }
+            }
+        });
+        assert!(validate_tool_arguments(&schema, &json!({ "n": 2.5 })).is_ok());
+        assert!(validate_tool_arguments(&schema, &json!({ "n": -1 })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "n": 11 })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "n": 2.3 })).is_err());
+    }
+
+    #[test]
+    fn enforces_common_formats() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "email": { "type": "string", "format": "email" },
+                "url": { "type": "string", "format": "uri" },
+                "uuid": { "type": "string", "format": "uuid" }
+            }
+        });
+        assert!(validate_tool_arguments(
+            &schema,
+            &json!({
+                "email": "a@example.com",
+                "url": "https://example.com/x",
+                "uuid": "01890a5d-ac96-774b-bcce-b302099a8057"
+            })
+        )
+        .is_ok());
+        assert!(validate_tool_arguments(&schema, &json!({ "email": "nope" })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "url": "not a url" })).is_err());
+        assert!(validate_tool_arguments(&schema, &json!({ "uuid": "nope" })).is_err());
     }
 }

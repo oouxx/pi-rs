@@ -746,9 +746,7 @@ pub struct AgentSession {
     /// MCP connections owned by this session, exposed to the `/mcp` manager
     /// so it shows and acts on the session's real connections.
     #[cfg(feature = "mcp")]
-    mcp_connections: Arc<
-        std::sync::Mutex<Vec<crate::core::mcp_runtime::McpServerConnection>>,
-    >,
+    mcp_connections: Arc<std::sync::Mutex<Vec<crate::core::mcp_runtime::McpServerConnection>>>,
     /// One-shot wait before the first prompt (ACP direct MCP tools).
     pre_prompt_wait: std::sync::Mutex<Option<PrePromptWait>>,
     /// Tool definitions registry, matching TS `_toolDefinitions` (used by
@@ -1260,10 +1258,8 @@ impl AgentSession {
 
         // Exposure metadata for extension tools; built-in and SDK custom tools
         // are `direct` unless they say otherwise.
-        let mut tool_exposures: std::collections::HashMap<
-            String,
-            pi_extension_api::ToolExposure,
-        > = std::collections::HashMap::new();
+        let mut tool_exposures: std::collections::HashMap<String, pi_extension_api::ToolExposure> =
+            std::collections::HashMap::new();
         let mut tool_namespaces: std::collections::HashMap<
             String,
             pi_extension_api::ToolNamespace,
@@ -1460,9 +1456,8 @@ impl AgentSession {
                 )
             })
             .collect();
-        let runtime_tools = std::sync::Arc::new(
-            crate::core::runtime_tools::RuntimeToolManager::default(),
-        );
+        let runtime_tools =
+            std::sync::Arc::new(crate::core::runtime_tools::RuntimeToolManager::default());
         if !searchable_tools.is_empty() {
             let documents: Vec<crate::core::tool_search::ToolSearchDocument> = searchable_tools
                 .iter()
@@ -1503,9 +1498,8 @@ impl AgentSession {
                       _signal: Option<tokio::sync::watch::Receiver<bool>>,
                       _on_update: Option<
                     Arc<
-                        dyn Fn(
-                                pi_agent_core::types::AgentToolResult<serde_json::Value>,
-                            ) + Send
+                        dyn Fn(pi_agent_core::types::AgentToolResult<serde_json::Value>)
+                            + Send
                             + Sync,
                     >,
                 >| {
@@ -1537,10 +1531,8 @@ impl AgentSession {
                         let active: std::collections::HashSet<String> =
                             state.tools.iter().map(|tool| tool.name.clone()).collect();
                         let matches = runtime_tools.search(&query, &active, limit);
-                        let additions: Vec<Arc<pi_agent_core::types::DynTool>> = matches
-                            .iter()
-                            .map(|(_, tool)| Arc::clone(tool))
-                            .collect();
+                        let additions: Vec<Arc<pi_agent_core::types::DynTool>> =
+                            matches.iter().map(|(_, tool)| Arc::clone(tool)).collect();
                         let names: Vec<String> =
                             matches.iter().map(|(name, _)| name.clone()).collect();
                         if additions.is_empty() {
@@ -1698,8 +1690,7 @@ impl AgentSession {
             .map(|ct| ct.iter().map(|d| d.name.clone()).collect())
             .unwrap_or_default();
         let explicit_activation = |name: &str| {
-            initial_active.iter().any(|tool| tool == name)
-                || allowed_names.contains(name)
+            initial_active.iter().any(|tool| tool == name) || allowed_names.contains(name)
         };
         tool_list.retain(|t| {
             let exposure = tool_exposures
@@ -1715,9 +1706,7 @@ impl AgentSession {
                 | pi_extension_api::ToolExposure::ModelOnly => true,
             };
             visible
-                && (custom_names.contains(&t.name)
-                    || !tools::is_builtin_tool(&t.name)
-                    || explicit)
+                && (custom_names.contains(&t.name) || !tools::is_builtin_tool(&t.name) || explicit)
         });
         let active_tool_names: Vec<String> = tool_list.iter().map(|t| t.name.clone()).collect();
         let tools: Vec<Arc<pi_agent_core::types::DynTool>> = tool_list
@@ -1849,6 +1838,7 @@ impl AgentSession {
                                             thinking_budgets: request_options
                                                 .thinking_budgets
                                                 .clone(),
+                                            deferred: None,
                                             debug: None,
                                         }
                                     };
@@ -4288,10 +4278,7 @@ impl AgentSession {
     pub fn tool_render_fns(
         &self,
     ) -> std::collections::HashMap<String, pi_extension_api::ToolRenderFn> {
-        let mut renderers: std::collections::HashMap<
-            String,
-            pi_extension_api::ToolRenderFn,
-        > = self
+        let mut renderers: std::collections::HashMap<String, pi_extension_api::ToolRenderFn> = self
             .tool_definitions
             .iter()
             .filter_map(|(name, def)| def.render.clone().map(|render| (name.clone(), render)))
@@ -5353,6 +5340,8 @@ References are relative to {}.
                                 raw_stop_reason: None,
                                 end_turn: None,
                                 timestamp: *timestamp,
+
+                                deferred: None,
                             };
                             (
                                 pi_agent_core::pi_ai::utils::overflow::is_context_overflow(
@@ -7358,6 +7347,8 @@ async fn consume_stream_to_message(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
+
+        deferred: None,
     };
 
     match stream_fn(model.clone(), context, None, fn_options).await {
@@ -8421,6 +8412,8 @@ fn is_retryable_error(message: &AgentMessage, context_window: u64) -> bool {
                 raw_stop_reason: None,
                 end_turn: None,
                 timestamp: *timestamp,
+
+                deferred: None,
             };
             if pi_agent_core::pi_ai::utils::overflow::is_context_overflow(&msg, cw) {
                 return false;

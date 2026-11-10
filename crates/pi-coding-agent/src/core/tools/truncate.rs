@@ -69,8 +69,7 @@ pub fn format_size(bytes: usize) -> String {
         let tenths = pi_ai::utils::text::round_one_decimal(bytes as f64 / 1024.0);
         format!("{}.{}KB", tenths / 10, tenths % 10)
     } else {
-        let tenths =
-            pi_ai::utils::text::round_one_decimal(bytes as f64 / (1024.0 * 1024.0));
+        let tenths = pi_ai::utils::text::round_one_decimal(bytes as f64 / (1024.0 * 1024.0));
         format!("{}.{}MB", tenths / 10, tenths % 10)
     }
 }

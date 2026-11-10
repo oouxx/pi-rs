@@ -17,7 +17,7 @@ crate 共用映射规范**。后续每一次"这段 TS 该怎么翻译成 Rust"�
 | `pi-ai`           | `packages/ai`                  | 统一多 Provider LLM API（OpenAI/Anthropic/Google 等）     |
 | `pi-agent-core`   | `packages/agent`               | Agent 运行时：状态机、工具调用循环、事件流                |
 | `pi-coding-agent` | `packages/coding-agent`        | 内置工具集（read/write/edit/bash/grep/find/ls）+ 扩展系统 |
-| `pi-cli`          | （coding-agent 的 CLI 入口）   | CLI 二进制入口、包管理 CLI                                |
+| `pi-cli`          | （coding-agent 的 CLI 入口）   | CLI 二进制入口                                |
 | `pi-extension-api`| （coding-agent 的扩展 API 抽出）| 扩展侧公开 API 类型（RegisteredCommand/Tool/Shortcut…）  |
 | `pi-extensions`   | （内置扩展实现）               | 随仓库分发的内置扩展                                      |
 | `pi-tui`          | `packages/tui`                 | 终端 UI 渲染层——最小可用形态（Elm 架构 + ratatui 0.29 + vendored grok-build markdown 管线；组件层不复刻原版，见 DEVIATIONS.md） |
@@ -168,6 +168,11 @@ TS 侧 JSON wire format 一律是 **camelCase**（`sourceInfo`、`firstKeptEntry
 | 36 | **可恢复工具失败被聚合为进程退出失败** | TS print mode 的退出码只由最终 assistant 回合决定：text 仅在最终 `stopReason` 为 `error`/`aborted` 时返回 1，json 成功跑完即返回 0；中间工具 `isError` 是可回灌给模型的结果 | Rust 监听任意 `ToolExecutionEnd.is_error` 并累积失败标志，导致一次可恢复工具失败把整个进程标成 exit 1（依赖退出码的 subagent 随之误判） | 不要把工具级 `isError` 聚合为进程级失败；text 结束看最终 assistant `stopReason`，json 仅在 prompt/执行本身失败时返回 1，工具失败继续作为事件和工具结果传递 | pi-coding-agent `print_mode`（PORTING_MISTAKES #166） |
 | 37 | **数组 `filter_map` 解析必填项会静默丢任务** | TS 对 `tasks`/`chain` 数组按元素校验，必填字段非法时整次参数校验失败 | Rust `items.iter().filter_map(TaskStep::parse).collect()` 把解析失败的元素直接过滤，`tasks` 少跑、`chain` 少走，且调用仍可能被当作成功 | 解析必填数组时用逐项 `Result` 后 `collect::<Result<Vec<_>, _>>()`；任一元素失败即拒绝整个请求并报告索引，禁止用 `filter_map` 跳过必填项 | pi-extensions subagent 的 `tasks`/`chain`（2026-10-27） |
 | 38 | **魔数嗅探只校验前缀，跳过结构校验** | TS 识别图片时不仅比对文件头，还解析后续字段：PNG 校验 IHDR 长度、扫描 `acTL` 拒绝 APNG，BMP 校验声明文件大小/像素偏移/DIB 头（planes、bpp） | Rust 只比对前缀（`89 50 4E 47…`、`BM`）就把文件判定为图片：APNG、只有签名的伪 PNG、任意 `BM` 开头的非 BMP 都会被当作图片送进模型 | 逐行移植 TS 的辅助校验函数（`isPng`/`isAnimatedPng`/`isBmp`/`readUint*`/`startsWithAscii`），并对越界读取用 `.get()` 返回 0 复刻 JS 的 `?? 0` 语义；不要用 `starts_with` 代替完整解析 | #173（PNG/BMP 判定过宽、APNG 未拒绝） |
+
+| 39 | **JS `String.length` 是 UTF-16，不是 scalar/byte** | `s.length`、`slice(0, n)`、阈值判断都按 UTF-16 code unit 计数；astral 字符（emoji、部分 CJK 扩展）算 2 | Rust `chars().count()` 按 scalar、`len()` 按 UTF-8 字节，都会在 astral 字符上提前/延后触发阈值；`&s[..n]` 还可能切在字符中间 panic | 长度用 `encode_utf16().count()`（或 `pi_ai::utils::text::utf16_len`）；截断用 `truncate_utf16`（跨代理对时整字丢弃，见 DEVIATIONS #38） |
+| 40 | **JS `toFixed` 与 Rust `{:.N}` 的 tie 规则不同** | `1.25.toFixed(1) === "1.3"`（精确 tie 远离零）；`1.005.toFixed(2)` 受二进制表示影响 | Rust `format!("{:.1}", 1.25)` 是 `"1.2"`（half-to-even） | 用 `pi_ai::utils::text::to_fixed` / `pi-tui::text_utils::to_fixed`（先 `(v*10^n).round()/10^n` 再格式化） |
+| 41 | **gitignore 不是简单 glob** | `ignore` npm 包支持 `**`、anchored 模式、目录-only 模式、negation 顺序与父目录匹配 | 手写 `contains`/`starts_with`/`ends_with` 只覆盖 `*` 前后缀，`**`/目录/negation 会误判 | 用 `ignore` crate 的 `GitignoreBuilder` + `matched_path_or_any_parents(path, is_dir)` |
+| 42 | **JS number 参数可能为小数/负数** | `limit ?? 500` 后直接参与 `results.length >= limit`；`2.5` 实际允许 3 条，`-1` 立即停止；`Array.slice` 再按 ToInteger 截断 | `as_u64()` 对小数/负数返回 `None`，静默回退默认值（例如 500），行为差异最大 | 需要时按 `as_f64()` 保留原值，比较用 f64，切片前再 `trunc()`；不能一律转 `usize` |
 
 > 复核重点（CLAUDE.md）：是否引入了上表模式、生命周期/所有权是否合理、错误路径
 > 是否正确传播、状态机事件顺序是否与原版一致。

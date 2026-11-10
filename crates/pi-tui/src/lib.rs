@@ -14,6 +14,7 @@ pub mod line_screen;
 pub mod render;
 pub mod selection;
 pub mod terminal;
+mod text_utils;
 pub mod theme;
 
 // Re-export key types

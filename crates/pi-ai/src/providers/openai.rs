@@ -582,7 +582,15 @@ fn convert_messages(
                                 signature = Some("reasoning_content".to_string());
                             }
                             if let Some(sig) = signature {
-                                if !sig.is_empty() {
+                                // v0.87.1 only injects a signature when it is
+                                // one of the three known reasoning fields;
+                                // arbitrary thinking signatures must not become
+                                // assistant-message keys.
+                                let is_reasoning_field = matches!(
+                                    sig.as_str(),
+                                    "reasoning" | "reasoning_content" | "reasoning_text"
+                                );
+                                if !sig.is_empty() && is_reasoning_field {
                                     let joined: String = thinking_blocks
                                         .iter()
                                         .filter_map(|b| match b {
@@ -994,6 +1002,8 @@ pub fn stream_openai(
                     raw_stop_reason: None,
                     end_turn: None,
                     timestamp: chrono::Utc::now().timestamp_millis(),
+
+                    deferred: None,
                 },
             });
         }
@@ -1629,10 +1639,10 @@ async fn stream_openai_inner(
         let budget = budget_level.min(ceiling.saturating_sub(1024));
         if budget > 0 {
             let budget_field = compat
-                    .thinking_token_budget_field
-                    .as_deref()
-                    .unwrap_or("thinking_token_budget");
-                body.insert(budget_field.into(), Value::Number(budget.into()));
+                .thinking_token_budget_field
+                .as_deref()
+                .unwrap_or("thinking_token_budget");
+            body.insert(budget_field.into(), Value::Number(budget.into()));
         }
     }
 
@@ -1771,6 +1781,8 @@ async fn stream_openai_inner(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
+
+        deferred: None,
     };
 
     let _ = tx.send(AssistantMessageEvent::Start {
@@ -2002,13 +2014,29 @@ async fn stream_openai_inner(
                     }
                 } else {
                     let ci = output.content.len();
+                    // Match v0.87.1 `ensureThinkingBlock`: emit an empty
+                    // thinking block with `thinking_start`, then append this
+                    // first chunk through `thinking_delta` (not folded into
+                    // the start event's partial).
                     output.content.push(ContentBlock::Thinking {
-                        thinking: reasoning.clone(),
+                        thinking: String::new(),
                         thinking_signature: Some(thinking_signature.to_string()),
                         redacted: None,
                     });
                     let _ = tx.send(AssistantMessageEvent::ThinkingStart {
                         content_index: ci,
+                        partial: output.clone(),
+                    });
+                    if let Some(ContentBlock::Thinking {
+                        thinking: ref mut t,
+                        ..
+                    }) = output.content.get_mut(ci)
+                    {
+                        t.push_str(&reasoning);
+                    }
+                    let _ = tx.send(AssistantMessageEvent::ThinkingDelta {
+                        content_index: ci,
+                        delta: reasoning.clone(),
                         partial: output.clone(),
                     });
                 }
@@ -3006,6 +3034,52 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_messages_ignores_unknown_thinking_signature_field() {
+        // v0.87.1 only injects `reasoning`, `reasoning_content`, or
+        // `reasoning_text`; an arbitrary signature must not become an
+        // assistant-message key.
+        let mut model = make_test_model();
+        model.provider = "deepseek".into();
+        let compat = get_compat(&model);
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::Assistant {
+                provider_thinking_level: None,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "reasoning text".into(),
+                        thinking_signature: Some("custom_reasoning_field".into()),
+                        redacted: None,
+                    },
+                    ContentBlock::text("answer"),
+                ],
+                api: "openai-completions".into(),
+                provider: "deepseek".into(),
+                model: "deepseek-r1".into(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 1000,
+            }],
+            tools: None,
+        };
+        let converted = convert_messages(
+            &model,
+            &context,
+            &compat,
+            &std::collections::HashMap::new(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "answer");
+        assert!(converted[0].get("custom_reasoning_field").is_none());
+    }
+
+    #[test]
     fn test_detect_compat_max_tokens_field() {
         // Together/baseUrl detection drives max_tokens vs max_completion_tokens.
         let mut model = make_test_model();
@@ -3434,10 +3508,19 @@ mod abort_tests {
         tx.send(true).unwrap();
 
         // The stream must terminate promptly with an Error(Aborted) message.
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
-            .await
-            .unwrap_or_else(|_| panic!("abort must interrupt the idle stream within 5s"))
-            .unwrap_or_else(|| panic!("stream must yield an event after abort"));
+        // (The first reasoning chunk now emits thinking_start + thinking_delta,
+        // so drain any already-buffered delta before the terminal event.)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match stream.next().await {
+                    Some(ev @ AssistantMessageEvent::Error { .. }) => break ev,
+                    Some(_) => continue,
+                    None => panic!("stream ended without an Error event after abort"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("abort must interrupt the idle stream within 5s"));
         match result {
             AssistantMessageEvent::Error { reason, error } => {
                 assert_eq!(reason, StopReason::Aborted);
@@ -3445,6 +3528,65 @@ mod abort_tests {
                 assert_eq!(error.error_message.as_deref(), Some("Request was aborted"));
             }
             other => panic!("expected Error(Aborted), got {other:?}"),
+        }
+    }
+
+    /// v0.87.1 `ensureThinkingBlock` + `thinking_delta`: the first reasoning
+    /// chunk is emitted as an empty `thinking_start` followed by a
+    /// `thinking_delta`, not folded into the start event.
+    #[tokio::test]
+    async fn first_reasoning_chunk_emits_start_then_delta() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = AsyncReadExt::read(&mut socket, &mut buf).await;
+            let body = "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"},\"index\":0}]}\n\ndata: [DONE]\n\n";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{body}");
+            let _ = AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
+        });
+
+        let model = abort_test_model(&addr.to_string());
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        };
+        let opts = StreamOptions {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let mut stream = stream_openai(&model, &context, Some(&opts));
+
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        let start_index = events
+            .iter()
+            .position(|e| matches!(e, AssistantMessageEvent::ThinkingStart { .. }))
+            .expect("thinking_start");
+        let delta_index = events
+            .iter()
+            .position(|e| matches!(e, AssistantMessageEvent::ThinkingDelta { .. }))
+            .expect("thinking_delta");
+        assert!(start_index < delta_index);
+        match &events[start_index] {
+            AssistantMessageEvent::ThinkingStart { partial, .. } => match &partial.content[0] {
+                ContentBlock::Thinking { thinking, .. } => assert!(thinking.is_empty()),
+                _ => panic!("expected thinking block"),
+            },
+            _ => unreachable!(),
+        }
+        match &events[delta_index] {
+            AssistantMessageEvent::ThinkingDelta { delta, .. } => {
+                assert_eq!(delta, "thinking...");
+            }
+            _ => unreachable!(),
         }
     }
 

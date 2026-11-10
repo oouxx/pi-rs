@@ -130,7 +130,11 @@ impl StdioTransport {
 
     /// Process id, once spawned.
     pub fn pid(&self) -> Option<u32> {
-        *self.inner.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        *self
+            .inner
+            .pid
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Captured stderr tail.
@@ -176,9 +180,9 @@ impl StdioTransport {
                 continue;
             }
             let Ok(text) = std::str::from_utf8(line) else {
-                self.inner
-                    .events
-                    .emit_error(&McpError::Transport("MCP stdio message is not UTF-8".to_string()));
+                self.inner.events.emit_error(&McpError::Transport(
+                    "MCP stdio message is not UTF-8".to_string(),
+                ));
                 continue;
             };
             match serde_json::from_str::<serde_json::Value>(text)
@@ -230,6 +234,54 @@ fn kill_process_tree(pid: u32, signal: i32) {
     }
 }
 
+/// Process groups of running servers, killed if the host exits without
+/// closing them (v1.5.0 `liveProcessGroups` + `process.once("exit")`).
+#[cfg(unix)]
+mod live_groups {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, Once, OnceLock};
+
+    static GROUPS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    static INSTALL: Once = Once::new();
+
+    fn groups() -> &'static Mutex<HashSet<u32>> {
+        GROUPS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    extern "C" fn kill_live_groups() {
+        let Some(lock) = GROUPS.get() else {
+            return;
+        };
+        if let Ok(groups) = lock.lock() {
+            for pid in groups.iter() {
+                // Negative pid: the whole group.
+                unsafe {
+                    libc::kill(-(*pid as i32), libc::SIGTERM);
+                }
+            }
+        }
+    }
+
+    pub fn register(pid: u32) {
+        INSTALL.call_once(|| {
+            // SAFETY: the callback only touches a static set and calls
+            // libc::kill, which is async-signal-safe.
+            unsafe {
+                libc::atexit(kill_live_groups);
+            }
+        });
+        if let Ok(mut groups) = groups().lock() {
+            groups.insert(pid);
+        }
+    }
+
+    pub fn unregister(pid: u32) {
+        if let Ok(mut groups) = groups().lock() {
+            groups.remove(&pid);
+        }
+    }
+}
+
 #[cfg(not(unix))]
 fn kill_process_tree(_pid: u32, _signal: i32) {}
 
@@ -243,7 +295,9 @@ impl McpTransport for StdioTransport {
         }
         if self.is_closed() {
             self.inner.started.store(false, Ordering::SeqCst);
-            return Err(McpError::ConnectionClosed("MCP connection closed".to_string()));
+            return Err(McpError::ConnectionClosed(
+                "MCP connection closed".to_string(),
+            ));
         }
         let options = &self.inner.options;
         let mut command = Command::new(&options.command);
@@ -275,7 +329,15 @@ impl McpTransport for StdioTransport {
                 )));
             }
         };
-        *self.inner.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = child.id();
+        *self
+            .inner
+            .pid
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = child.id();
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            live_groups::register(pid);
+        }
         let stdin = child.stdin.take();
         *self.inner.stdin.lock().await = stdin;
         let Some(stdout) = child.stdout.take() else {
@@ -324,7 +386,9 @@ impl McpTransport for StdioTransport {
 
     async fn send(&self, message: JsonRpcMessage, options: McpTransportSendOptions) -> Result<()> {
         if !self.inner.started.load(Ordering::SeqCst) || self.is_closed() {
-            return Err(McpError::ConnectionClosed("MCP connection closed".to_string()));
+            return Err(McpError::ConnectionClosed(
+                "MCP connection closed".to_string(),
+            ));
         }
         if options.is_cancelled() {
             return Err(McpError::Aborted);
@@ -332,7 +396,9 @@ impl McpTransport for StdioTransport {
         let payload = message.to_json_string()?;
         let mut stdin = self.inner.stdin.lock().await;
         let Some(stdin) = stdin.as_mut() else {
-            return Err(McpError::ConnectionClosed("MCP stdio stdin closed".to_string()));
+            return Err(McpError::ConnectionClosed(
+                "MCP stdio stdin closed".to_string(),
+            ));
         };
         stdin.write_all(payload.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
@@ -357,7 +423,8 @@ impl McpTransport for StdioTransport {
                     #[cfg(not(unix))]
                     let _ = child.start_kill();
                 }
-                let closed = tokio::time::timeout(self.inner.options.close_timeout, child.wait()).await;
+                let closed =
+                    tokio::time::timeout(self.inner.options.close_timeout, child.wait()).await;
                 if closed.is_err() {
                     if let Some(pid) = pid {
                         #[cfg(unix)]
@@ -377,6 +444,10 @@ impl McpTransport for StdioTransport {
             }
         }
         self.inner.events.emit_close();
+        #[cfg(unix)]
+        if let Some(pid) = self.pid() {
+            live_groups::unregister(pid);
+        }
         Ok(())
     }
 
@@ -412,7 +483,8 @@ mod tests {
             command: "/bin/sh".to_string(),
             args: vec![
                 "-c".to_string(),
-                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}'".to_string(),
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}'"
+                    .to_string(),
             ],
             ..StdioTransportOptions::new("")
         });

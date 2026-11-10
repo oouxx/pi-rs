@@ -34,6 +34,7 @@ fn partial_msg(text: &str) -> AssistantMessage {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: 0,
+        deferred: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn final_msg(text: &str, stop: StopReason) -> AssistantMessage {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: 0,
+        deferred: None,
     }
 }
 
@@ -428,6 +430,7 @@ async fn test_stream_error_returns_error_message() {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: 0,
+        deferred: None,
     };
 
     let events = vec![

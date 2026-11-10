@@ -748,6 +748,7 @@ where
                         },
                         reasoning: reasoning.clone(),
                         thinking_budgets: opts.thinking_budgets.clone(),
+                        deferred: None,
                         debug: None,
                     };
 

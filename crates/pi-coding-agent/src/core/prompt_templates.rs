@@ -212,8 +212,8 @@ fn first_line_description(body: &str) -> String {
     let Some(line) = body.lines().find(|l| !l.trim().is_empty()) else {
         return String::new();
     };
-    let mut out: String = line.chars().take(60).collect();
-    if line.chars().count() > 60 {
+    let mut out = pi_ai::utils::text::truncate_utf16(line, 60).to_string();
+    if pi_ai::utils::text::utf16_len(line) > 60 {
         out.push_str("...");
     }
     out

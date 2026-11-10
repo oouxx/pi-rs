@@ -34,7 +34,8 @@ fn missing_api_provider_stream(model: &Model) -> AssistantMessageEventStream {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
-    };
+
+        deferred: None,};
     let _ = tx.send(AssistantMessageEvent::Error {
         reason: StopReason::Error,
         error,

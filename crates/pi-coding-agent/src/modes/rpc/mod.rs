@@ -731,6 +731,7 @@ mod tests {
             error_message: None,
             raw_stop_reason: None,
             end_turn: None,
+            deferred: None,
             timestamp: 0,
         }
     }

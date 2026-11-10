@@ -147,6 +147,7 @@ mod tests {
             error_message: Some(msg.into()),
             raw_stop_reason: None,
             end_turn: None,
+            deferred: None,
             timestamp: 0,
         }
     }
@@ -175,6 +176,7 @@ mod tests {
             error_message: None,
             raw_stop_reason: None,
             end_turn: None,
+            deferred: None,
             timestamp: 0,
         }
     }

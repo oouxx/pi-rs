@@ -136,7 +136,7 @@ impl UsageStats {
             parts.push(format!("W{}", format_tokens(self.cache_write)));
         }
         if self.cost > 0.0 {
-            parts.push(format!("${:.4}", self.cost));
+            parts.push(format!("${}", to_fixed(self.cost, 4)));
         }
         if self.context_tokens > 0 {
             parts.push(format!("ctx:{}", format_tokens(self.context_tokens)));
@@ -1379,6 +1379,33 @@ fn display_items(messages: &[Value]) -> Vec<RenderItem> {
     items
 }
 
+/// UTF-16 code-unit length (match JS `String.length`).
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// Truncate to at most `max` UTF-16 code units, dropping a whole scalar if it
+/// would straddle the boundary (Rust strings cannot hold lone surrogates).
+fn truncate_utf16(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut units = 0usize;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if units + width > max {
+            break;
+        }
+        out.push(ch);
+        units += width;
+    }
+    out
+}
+
+/// JS `toFixed(digits)` for non-negative values: exact ties round away from
+/// zero, unlike Rust's default half-to-even formatting.
+fn to_fixed(value: f64, digits: usize) -> String {
+    let factor = 10f64.powi(digits as i32);
+    format!("{:.*}", digits, (value * factor).round() / factor)
+}
 /// 工具调用的单行摘要（对齐 TS `formatToolCall`，去掉主题着色后的纯文本）。
 fn format_tool_call(name: &str, args: &Value) -> String {
     let path = args
@@ -1388,12 +1415,8 @@ fn format_tool_call(name: &str, args: &Value) -> String {
     match name {
         "bash" => {
             let command = args.get("command").and_then(Value::as_str).unwrap_or("...");
-            let preview: String = command.chars().take(60).collect();
-            let ellipsis = if command.chars().count() > 60 {
-                "..."
-            } else {
-                ""
-            };
+            let preview = truncate_utf16(command, 60);
+            let ellipsis = if utf16_len(command) > 60 { "..." } else { "" };
             format!("$ {preview}{ellipsis}")
         }
         "read" => {

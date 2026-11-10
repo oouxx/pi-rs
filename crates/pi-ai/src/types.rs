@@ -286,6 +286,9 @@ pub struct AssistantMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "providerThinkingLevel")]
     pub provider_thinking_level: Option<String>,
+    /// Provider token for a best-effort deferred response (TS `deferred`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred: Option<DeferredHandle>,
     pub timestamp: i64,
 }
 
@@ -1351,6 +1354,46 @@ impl<'de> serde::Deserialize<'de> for StreamOptions {
     }
 }
 
+/// TS `deferred?: boolean | { window?: "15m" | "1h" | "24h" }`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum DeferredRequest {
+    Enabled(bool),
+    Config {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        window: Option<DeferredWindow>,
+    },
+}
+
+/// TS `deferred` request window values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DeferredWindow {
+    #[serde(rename = "15m")]
+    FifteenMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "24h")]
+    TwentyFourHours,
+}
+
+/// Provider token for a best-effort deferred response (TS `DeferredHandle`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeferredHandle {
+    pub provider: String,
+    pub model_id: String,
+    pub api: String,
+    /// Provider token, such as a response id or batch id plus row id.
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_after_ms: Option<u64>,
+    /// Provider conversion data required to reconstruct the final message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimpleStreamOptions {
     #[serde(flatten)]
@@ -1360,6 +1403,8 @@ pub struct SimpleStreamOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "thinkingBudgets")]
     pub thinking_budgets: Option<ThinkingBudgets>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred: Option<DeferredRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
 }
@@ -1639,6 +1684,7 @@ mod tests {
                 raw_stop_reason: None,
                 end_turn: None,
                 timestamp: 0,
+                deferred: None,
             },
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -1746,6 +1792,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1_234_567_890,
+
+            deferred: None,
         };
         let event = AssistantMessageEvent::Start { partial: msg };
         let json = serde_json::to_string(&event).unwrap();
@@ -1776,6 +1824,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1_234_567_890,
+
+            deferred: None,
         };
         let event = AssistantMessageEvent::Error {
             reason: StopReason::Error,

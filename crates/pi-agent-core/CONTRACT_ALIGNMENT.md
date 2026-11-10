@@ -31,3 +31,14 @@
 - 使用 mock stream 固化事件序列黄金用例。
 
 未实现或有意保留的差异必须转入 `crates/pi-agent-core/DEVIATIONS.md`，不能只留在本表的“待补充”中。
+
+## 工具 abort / compaction / skills（2026-11-10）
+
+| 行为场景 | TS 基线行为 | Rust 当前行为 | 状态 |
+| --- | --- | --- | --- |
+| `beforeToolCall` 内 abort | hook 返回后检查 signal，abort 则不执行工具；返回前再查一次 | `prepare_tool_call` 两处 `is_aborted` 检查 | 已对齐（2026-11-10） |
+| compaction 摘要请求 | 固定 `SUMMARIZATION_SYSTEM_PROMPT`；结构化/更新 prompt、previous summary、custom instructions 放在 user message；`sessionId ?? uuidv7()` | `build_summary_prompt` + 仅在 None 时生成 session id | 已对齐（2026-11-10） |
+| branch summary 预算/文件 | 超预算的 compaction/branch summary 在已用 <90% 时保留；从先前 details 播种 readFiles/modifiedFiles；custom message 不参与 | 同左 | 已对齐（2026-11-10） |
+| skills ignore | gitignore 语义（`**`、目录模式、negation 顺序） | `ignore` crate 的 `Gitignore` | 已对齐（2026-11-10） |
+| skill name/description 上限 | UTF-16 `.length` | `utf16_len` | 已对齐（2026-11-10） |
+| 工具参数关键字 | TypeBox 校验 `format`/`pattern`/`minimum`/`maximum`/长度/数量等 | `validate_keywords` 覆盖同名关键字（format 支持 email/uri/date-time/date/time/uuid/ipv4/ipv6/hostname） | 已对齐（2026-11-10） |

@@ -115,25 +115,24 @@ async fn prepare_tool_call(
     };
 
     let prepared_tool_call = prepare_tool_call_arguments(tool, tool_call);
-    let validated_args = match validate_tool_arguments(
-        &tool.parameters_schema,
-        &prepared_tool_call.arguments,
-    ) {
-        Ok(args) => args,
-        Err(error) => {
-            // Match v0.87.1: a schema failure becomes an error tool result
-            // instead of reaching the tool implementation.
-            return PreparedOrImmediate::Immediate {
-                result: create_error_tool_result(&format!(
-                    "Validation failed for tool \"{}\":\n  - {}\n\nReceived arguments:\n{}",
-                    tool_call.name,
-                    error,
-                    serde_json::to_string_pretty(&prepared_tool_call.arguments).unwrap_or_default()
-                )),
-                is_error: true,
-            };
-        }
-    };
+    let validated_args =
+        match validate_tool_arguments(&tool.parameters_schema, &prepared_tool_call.arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                // Match v0.87.1: a schema failure becomes an error tool result
+                // instead of reaching the tool implementation.
+                return PreparedOrImmediate::Immediate {
+                    result: create_error_tool_result(&format!(
+                        "Validation failed for tool \"{}\":\n  - {}\n\nReceived arguments:\n{}",
+                        tool_call.name,
+                        error,
+                        serde_json::to_string_pretty(&prepared_tool_call.arguments)
+                            .unwrap_or_default()
+                    )),
+                    is_error: true,
+                };
+            }
+        };
 
     if let Some(before_fn) = before_tool_call {
         let ctx = BeforeToolCallContext {
@@ -143,6 +142,14 @@ async fn prepare_tool_call(
             context: current_context.clone(),
         };
         let result = before_fn(ctx, signal.clone()).await;
+        // v0.87.1 checks the signal immediately after the before hook: an
+        // abort raised inside `beforeToolCall` must not execute the tool.
+        if is_aborted(signal) {
+            return PreparedOrImmediate::Immediate {
+                result: create_error_tool_result("Operation aborted"),
+                is_error: true,
+            };
+        }
         if let Some(before_result) = result {
             if before_result.block {
                 // TS 0.84.1 (#7715): a blocked result can carry
@@ -172,6 +179,15 @@ async fn prepare_tool_call(
                 };
             }
         }
+    }
+
+    // v0.87.1's second check: abort may also have been raised by the
+    // argument-preparation path.
+    if is_aborted(signal) {
+        return PreparedOrImmediate::Immediate {
+            result: create_error_tool_result("Operation aborted"),
+            is_error: true,
+        };
     }
 
     PreparedOrImmediate::Prepared {
@@ -878,6 +894,8 @@ async fn stream_assistant_response(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: chrono::Utc::now().timestamp_millis(),
+
+        deferred: None,
     });
 
     if added_partial {
@@ -1895,6 +1913,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1000,
+
+            deferred: None,
         }
     }
 
@@ -2601,6 +2621,83 @@ mod tests {
                 );
             }
             _ => panic!("expected Immediate when blocked"),
+        }
+    }
+
+    /// v0.87.1 checks the abort signal immediately after `beforeToolCall`:
+    /// a signal flipped inside the hook must prevent tool execution.
+    #[tokio::test]
+    async fn test_prepare_tool_call_abort_inside_before_hook() {
+        let tool = dummy_agent_tool(
+            "my_tool",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                usage: None,
+                terminate: None,
+                structured_content: None,
+            }),
+        );
+        let ctx = dummy_context(vec![tool]);
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let before_fn: BeforeToolCallFn = Arc::new(move |_ctx, _signal| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(true);
+                None
+            })
+        });
+
+        let call = dummy_tool_call("1", "my_tool", serde_json::json!({}));
+        let result = prepare_tool_call(
+            &ctx,
+            &dummy_assistant_message(),
+            &call,
+            &Some(before_fn),
+            &Some(rx),
+        )
+        .await;
+
+        match result {
+            PreparedOrImmediate::Immediate { result, is_error } => {
+                assert!(is_error);
+                assert!(matches!(
+                    &result.content[0],
+                    ContentBlock::Text { text, .. } if text == "Operation aborted"
+                ));
+            }
+            _ => panic!("expected Immediate after abort inside beforeToolCall"),
+        }
+    }
+
+    /// The second v0.87.1 check also covers a signal that was already aborted
+    /// before argument preparation.
+    #[tokio::test]
+    async fn test_prepare_tool_call_pre_aborted_signal() {
+        let tool = dummy_agent_tool(
+            "my_tool",
+            serde_json::json!({}),
+            None,
+            Ok(AgentToolResult {
+                content: vec![],
+                details: serde_json::json!({}),
+                usage: None,
+                terminate: None,
+                structured_content: None,
+            }),
+        );
+        let ctx = dummy_context(vec![tool]);
+        let (_tx, rx) = tokio::sync::watch::channel(true);
+
+        let call = dummy_tool_call("1", "my_tool", serde_json::json!({}));
+        let result =
+            prepare_tool_call(&ctx, &dummy_assistant_message(), &call, &None, &Some(rx)).await;
+
+        match result {
+            PreparedOrImmediate::Immediate { is_error, .. } => assert!(is_error),
+            _ => panic!("expected Immediate for an already-aborted signal"),
         }
     }
 

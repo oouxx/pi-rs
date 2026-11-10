@@ -41,13 +41,13 @@ pub struct GrepToolInput {
     pub ignore_case: Option<bool>,
     pub literal: Option<bool>,
     pub context: Option<usize>,
-    pub limit: Option<usize>,
+    pub limit: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GrepToolDetails {
     pub truncation: Option<TruncationResult>,
-    pub match_limit_reached: Option<usize>,
+    pub match_limit_reached: Option<f64>,
     pub lines_truncated: Option<bool>,
 }
 
@@ -96,9 +96,12 @@ impl GrepOperations for LocalGrepOperations {
     fn read_file(&self, path: &str) -> crate::core::tools::AsyncOpResult<String> {
         let path = path.to_string();
         Box::pin(async move {
-            tokio::fs::read_to_string(&path)
+            // Node reads context files with `readFile(path, "utf-8")`, which
+            // replaces invalid byte sequences with U+FFFD instead of failing.
+            let bytes = tokio::fs::read(&path)
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
         })
     }
 }
@@ -266,12 +269,11 @@ pub fn create_grep_tool(
                         .get("context")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as usize;
-                    let effective_limit = params
-                        .get("limit")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize)
-                        .unwrap_or(DEFAULT_LIMIT)
-                        .max(1);
+                    // TS `Math.max(1, limit ?? DEFAULT_LIMIT)`, keeping JS
+                    // number semantics for fractional/negative input.
+                    let effective_limit = super::js_number::js_number(params.get("limit"))
+                        .map(|v| v.max(1.0))
+                        .unwrap_or(DEFAULT_LIMIT as f64);
 
                     // Check for abort
                     if let Some(ref rx) = signal {
@@ -390,7 +392,7 @@ pub fn create_grep_tool(
                                         line_text: line_text.map(str::to_string),
                                     });
                                 }
-                                if match_count >= effective_limit {
+                                if match_count as f64 >= effective_limit {
                                     match_limit_reached = true;
                                     killed_due_to_limit = true;
                                     let _ = child.kill().await;
@@ -524,8 +526,8 @@ pub fn create_grep_tool(
                     if match_limit_reached {
                         notices.push(format!(
                             "{} matches limit reached. Use limit={} for more, or refine pattern",
-                            effective_limit,
-                            effective_limit * 2
+                            super::js_number::js_number_display(effective_limit),
+                            super::js_number::js_number_display(effective_limit * 2.0)
                         ));
                         details.match_limit_reached = Some(effective_limit);
                     }
@@ -592,7 +594,7 @@ mod tests {
         assert_eq!(input.pattern, "hello");
         assert_eq!(input.path, Some("/tmp".to_string()));
         assert_eq!(input.context, Some(2));
-        assert_eq!(input.limit, Some(10));
+        assert_eq!(input.limit, Some(10.0));
     }
 
     #[test]

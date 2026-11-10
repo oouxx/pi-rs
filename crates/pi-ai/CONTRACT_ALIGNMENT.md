@@ -102,3 +102,9 @@
 | `Tool.constrainedSampling` | 可选，`false \| {type:"json_schema"\|"grammar", ...}` | `Option<ConstrainedSamplingConfig>`，wire 键 `constrainedSampling`；`false`/`null`/缺省都折叠为 `None` | 是（`false` 与缺省在 provider 侧等价） | 修复见 PORTING_MISTAKES.md |
 | `GrammarVariants` 键名 | `GrammarFormat = "openai_lark" \| "openai_regex"`（snake_case） | 同左（`openai_lark`/`openai_regex`） | 是 | 修复见 PORTING_MISTAKES.md |
 
+| Anthropic `eager_input_streaming` | `convertTools` 在 `supportsEagerToolInputStreaming`（默认 true）时给每个工具加 `eager_input_streaming: true` | `AnthropicTool.eager_input_streaming`，`convert_tools` 按 `compat.supports_eager_tool_input_streaming.unwrap_or(true)` 填充 | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |
+| `pi-messages` `providerThinkingLevel` | `done`/`error` 事件可带 `providerThinkingLevel`，写入 assistant partial | 两个事件变体解析并写回 `provider_thinking_level` | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |
+| Responses tool-call `itemId` 丢弃 | `(isDifferentModel && fc_*) \|\| (!grammar && !fc_*)` | `is_different_model` 仅在同 provider+api 且 model 不同时为真 | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |
+| `retry-after` HTTP-date | `Date.parse(value) - Date.now()`，不可解析时按 0 处理 | `parse_http_date_ms` 支持 RFC 1123/850/asctime；不可解析返回 0 | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |
+| OpenAI thinking signature 回放键 | 仅 `reasoning`/`reasoning_content`/`reasoning_text` 可作为 assistant 消息键 | 同左（白名单） | 是（2026-11-10） | 修复见 `PORTING_MISTAKES.md` |
+| `deferred` 请求/句柄 | `SimpleStreamOptions.deferred?: boolean \| {window?}`；`AssistantMessage.deferred?: DeferredHandle{provider,modelId,api,id,expiresAt?,pollAfterMs?,data?}` | `DeferredRequest`/`DeferredWindow`/`DeferredHandle`（wire camelCase）；两个字段均可选且缺省不序列化 | 是（2026-11-10，类型层） | 当前没有 provider 产生 deferred 响应（原版仅 faux provider 使用） |

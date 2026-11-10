@@ -85,7 +85,7 @@ pub struct CliArgs {
     /// Invalid/missing `--default-trust` value. Empty means the value was
     /// missing; non-empty preserves the rejected input for diagnostics.
     pub invalid_default_trust: Option<String>,
-    /// Subcommand (e.g. "install", "remove", "list")
+    /// Subcommand (e.g. "update", "config", "mcp")
     pub subcommand: Option<String>,
     /// Arguments to the subcommand
     pub subcommand_args: Vec<String>,
@@ -156,14 +156,10 @@ pub fn print_help() {
     println!("    -v, --version         Show version");
     println!();
     println!("SUBCOMMANDS:");
-    println!("    install <source>      Install a package/extension");
-    println!("    remove <name>         Remove an extension");
-    println!("    list                  List installed extensions");
     println!(
         "    update                Update {} to the latest GitHub release",
         config::APP_NAME
     );
-    println!("    update --all          Update all extensions");
     println!("    config                Manage configuration");
     println!("    mcp                   Manage MCP servers (list/add/remove/enable/disable/login/logout)");
     println!("    refresh               Refresh the remote model catalog");
@@ -490,13 +486,14 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             }
 
             // Check for subcommands
-            s if s == "install"
-                || s == "remove"
-                || s == "update"
-                || s == "list"
+            s if s == "update"
                 || s == "config"
                 || s == "mcp"
-                || s == "refresh" =>
+                || s == "refresh"
+                || s == "install"
+                || s == "remove"
+                || s == "uninstall"
+                || s == "list" =>
             {
                 result.subcommand = Some(s.to_string());
                 // Collect remaining args as subcommand args

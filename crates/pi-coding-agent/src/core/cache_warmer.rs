@@ -798,9 +798,9 @@ fn inactive(reason: &str) -> CacheWarmingStatus {
 
 fn format_dollars(value: f64) -> String {
     if value < 0.0 {
-        format!("-${:.3}", value.abs())
+        format!("-${}", pi_ai::utils::text::to_fixed(value.abs(), 3))
     } else {
-        format!("${value:.3}")
+        format!("${}", pi_ai::utils::text::to_fixed(value, 3))
     }
 }
 
@@ -1288,6 +1288,7 @@ mod tests {
                         raw_stop_reason: None,
                         end_turn: None,
                         timestamp: 0,
+                        deferred: None,
                     })
                 })
             }

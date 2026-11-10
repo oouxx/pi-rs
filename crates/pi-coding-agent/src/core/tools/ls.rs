@@ -16,13 +16,13 @@ const DEFAULT_LIMIT: usize = 500;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LsToolInput {
     pub path: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LsToolDetails {
     pub truncation: Option<TruncationResult>,
-    pub entry_limit_reached: Option<usize>,
+    pub entry_limit_reached: Option<f64>,
 }
 
 // ============================================================================
@@ -158,11 +158,10 @@ pub fn create_ls_tool(
                 Box::pin(async move {
                     let dir_path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
                     // v0.87.1: `limit ?? DEFAULT_LIMIT` (no floor/clamp).
-                    let limit = params
-                        .get("limit")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize)
-                        .unwrap_or(DEFAULT_LIMIT);
+                    // Keep the JS number: fractional/negative limits affect the
+                    // `results.length >= limit` comparison.
+                    let limit = super::js_number::js_number(params.get("limit"))
+                        .unwrap_or(DEFAULT_LIMIT as f64);
 
                     let absolute_path = path_utils::resolve_to_cwd(dir_path, &cwd);
                     let absolute_path_str = absolute_path.to_string_lossy().to_string();
@@ -170,29 +169,30 @@ pub fn create_ls_tool(
                     // Check for abort
                     if let Some(ref rx) = signal {
                         if *rx.borrow() {
-                            return Ok(AgentToolResult {
-                                content: vec![ContentBlock::text("Operation aborted")],
-                                details: serde_json::Value::Null,
-                                usage: None,
-
-                                terminate: None,
-                                structured_content: None,
-                            });
+                            // v0.87.1 rejects with `Operation aborted`; a
+                            // successful result would leave `isError` false.
+                            return Err("Operation aborted".into());
                         }
                     }
 
                     // Check if path exists
-                    let exists = operations.exists(&absolute_path_str).await.unwrap_or(false);
+                    let exists = operations
+                        .exists(&absolute_path_str)
+                        .await
+                        .map_err(|e| format!("{e}"))?;
                     if !exists {
                         // v0.87.1 rejects; a successful text result would make
                         // `isError` false for a missing path.
-                        return Err(format!("Path not found: {dir_path}").into());
+                        return Err(format!("Path not found: {absolute_path_str}").into());
                     }
 
                     // Check if path is a directory
-                    let is_dir = operations.is_directory(&absolute_path_str).await.unwrap_or(false);
+                    let is_dir = operations
+                        .is_directory(&absolute_path_str)
+                        .await
+                        .map_err(|e| format!("{e}"))?;
                     if !is_dir {
-                        return Err(format!("Not a directory: {dir_path}").into());
+                        return Err(format!("Not a directory: {absolute_path_str}").into());
                     }
 
                     // Read directory entries
@@ -209,7 +209,7 @@ pub fn create_ls_tool(
                     let mut results: Vec<String> = Vec::new();
                     let mut entry_limit_reached = false;
                     for entry in &sorted {
-                        if results.len() >= limit {
+                        if results.len() as f64 >= limit {
                             entry_limit_reached = true;
                             break;
                         }
@@ -251,8 +251,8 @@ pub fn create_ls_tool(
                     if entry_limit_reached {
                         notices.push(format!(
                             "{} entries limit reached. Use limit={} for more",
-                            limit,
-                            limit * 2
+                            super::js_number::js_number_display(limit),
+                            super::js_number::js_number_display(limit * 2.0)
                         ));
                         details.entry_limit_reached = Some(limit);
                     }

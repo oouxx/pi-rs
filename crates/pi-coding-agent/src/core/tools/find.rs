@@ -34,13 +34,13 @@ const DEFAULT_LIMIT: usize = 1000;
 pub struct FindToolInput {
     pub pattern: String,
     pub path: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FindToolDetails {
     pub truncation: Option<TruncationResult>,
-    pub result_limit_reached: Option<usize>,
+    pub result_limit_reached: Option<f64>,
 }
 
 // ============================================================================
@@ -260,10 +260,10 @@ fn build_fd_args(
 /// Assemble the tool result from result lines (shared by both search paths).
 fn emit_results(
     result_lines: &[String],
-    effective_limit: usize,
+    effective_limit: f64,
     limit_notice: &str,
 ) -> AgentToolResult<serde_json::Value> {
-    let result_limit_reached = result_lines.len() >= effective_limit;
+    let result_limit_reached = result_lines.len() as f64 >= effective_limit;
     let raw_output = result_lines.join("\n");
     let truncation = truncate_head_bytes_only(&raw_output);
     let mut details = FindToolDetails::default();
@@ -435,11 +435,15 @@ pub fn create_find_tool(
                 Box::pin(async move {
                     let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                     let search_dir = params.get("path").and_then(|v| v.as_str());
-                    let effective_limit = params
-                        .get("limit")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize)
-                        .unwrap_or(DEFAULT_LIMIT);
+                    let effective_limit = super::js_number::js_number(params.get("limit"))
+                        .unwrap_or(DEFAULT_LIMIT as f64);
+                    // `fd`/custom glob take an integer; ceil preserves the JS
+                    // `results.length >= limit` cutoff for fractional limits.
+                    let fd_limit = if effective_limit <= 0.0 {
+                        0usize
+                    } else {
+                        effective_limit.ceil() as usize
+                    };
 
                     // Check for abort
                     if let Some(ref rx) = signal {
@@ -455,6 +459,18 @@ pub fn create_find_tool(
                     .to_string_lossy()
                     .to_string();
 
+                    // A non-positive JS limit stops before the first result.
+                    if effective_limit <= 0.0 {
+                        return Ok(emit_results(
+                            &[],
+                            effective_limit,
+                            &format!(
+                                "{} results limit reached",
+                                super::js_number::js_number_display(effective_limit)
+                            ),
+                        ));
+                    }
+
                     // Custom operations replace the `fd` search (TS
                     // `if (customOps?.glob)`).
                     if let Some(ops) = operations {
@@ -469,7 +485,7 @@ pub fn create_find_tool(
                         let ignore_dirs =
                             ["**/node_modules/**".to_string(), "**/.git/**".to_string()];
                         let results = ops
-                            .glob(pattern, &search_path, &ignore_dirs, effective_limit)
+                            .glob(pattern, &search_path, &ignore_dirs, fd_limit)
                             .await?;
                         if let Some(ref rx) = signal {
                             if *rx.borrow() {
@@ -486,12 +502,14 @@ pub fn create_find_tool(
                         return Ok(emit_results(
                             &relativized,
                             effective_limit,
-                            &format!("{} results limit reached", effective_limit),
+                            &format!(
+                                "{} results limit reached",
+                                super::js_number::js_number_display(effective_limit)
+                            ),
                         ));
                     }
 
-                    let lines =
-                        run_fd(&search_path, pattern, effective_limit, signal.clone()).await?;
+                    let lines = run_fd(&search_path, pattern, fd_limit, signal.clone()).await?;
                     if lines.is_empty() {
                         return Ok(text_result("No files found matching pattern"));
                     }
@@ -508,8 +526,8 @@ pub fn create_find_tool(
                         effective_limit,
                         &format!(
                             "{} results limit reached. Use limit={} for more, or refine pattern",
-                            effective_limit,
-                            effective_limit * 2
+                            super::js_number::js_number_display(effective_limit),
+                            super::js_number::js_number_display(effective_limit * 2.0)
                         ),
                     ))
                 })

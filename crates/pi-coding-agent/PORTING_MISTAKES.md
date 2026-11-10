@@ -241,3 +241,67 @@ This file documents bugs found and fixed during the RPC mode alignment check.
 | 181 | `modes/rpc/mod.rs:create_rpc_ui_context` | 无 timeout 的扩展对话框若被取消（run abort / 扩展拆除），oneshot sender 永远留在 `pending_extension_requests` | 清理只挂在"收到响应"和"超时"两条路径上 | 新增 `PendingDialogGuard`（`Drop` 时按 id 删除），future 被 drop 也能清理 |
 | 182 | `core/resource_loader.rs:extend_resources` | 扩展贡献的 skill/prompt/theme source info 每次 `/reload` 都无条件 `push`，同一份贡献随 reload 次数线性累积，`find_extension_source_info` 的线性扫描也随之变慢 | 只搬了"追加"，没搬幂等判断（平行的路径列表已有 `merge_paths` 去重） | 按 `(path, SourceInfo)` 去重后再 push；补 `test_extend_resources_is_idempotent_across_reloads` |
 | 183 | `core/tools/tool_definition_wrapper.rs:content_blocks_from_values` + `agent_session.rs` / `extensions/dispatcher.rs` 的工具输出转换 | TS `AgentToolResult.content` 是有类型的 `(TextContent \| ImageContent)[]`；Rust `ToolCallOutput.content: Vec<Value>` 用 `.filter_map(serde_json::from_value(..).ok())` 转换，裸 JSON/字符串/未知 type 会被静默丢弃，模型收到空 toolResult（GitHub issue #2）；旧 MCP 路径的 `structuredContent` 也直接塞进 content，同样被丢弃 | 把有类型的 TS 数组翻译成无类型 `Vec<Value>`，转换失败即丢弃 | 新增共享 `content_blocks_from_values`：非法项降级为 text block（JSON/字符串原样保留），不丢弃；所有工具输出转换点统一使用；MCP `structuredContent` 走 `to_llm_content` 的 text 回退；补裸 JSON/混合内容/structuredContent 回归测试 |
+| 184 | `pi-ai/src/providers/pi_messages.rs:truncate_diagnostic_string` | 按 UTF-8 字节截 8192，`&value[..8192]` 在多字节字符边界 panic | 字节 vs UTF-16；JS `slice` 按 code unit | 新增共享 `pi_ai::utils::text::{utf16_len,truncate_utf16}`，按 UTF-16 截断且不切断代理对；补 emoji/CJK 测试 |
+| 185 | `pi-agent-core/.../compaction.rs:serialize_conversation` | `&text[..2000]` 多字节边界 panic，且丢失 `[N more characters truncated]` 标记 | 同上 | 用共享 UTF-16 截断 + v0.87.1 标记；补多字节测试 |
+| 186 | `pi-tui/src/completion.rs:find_last_delimiter` + `app.rs` | 返回分隔符首字节，caller `+1` 后切片，多字节分隔符后 Tab 补全 panic | 字节索引 vs UTF-16 索引 | 改为返回分隔符之后的字节偏移；更新调用方与测试 |
+| 187 | `pi-cli/src/mcp_cli.rs:cmd_login` | 在 `#[tokio::main]` 内新建 runtime 并 `block_on`，`mcp login` panic | runtime 嵌套 | `handle_mcp_command`/`cmd_login` 改 async，直接 `.await` |
+| 188 | `pi-agent-core/src/agent_loop.rs:validate_tool_arguments` | 只过滤未知字段，不校验 required/type/enum/argumentsError | 缺失 schema 校验 | 新增 `tool_validation` 模块（type/enum/const/anyOf/oneOf/allOf/required/items/coercion），失败转 error tool result；补 7 个测试 |
+| 189 | `pi-agent-core/.../compaction.rs:estimate_tokens` | UTF-8 字节 + 整数除法 + `max(1)`，忽略 image/thinking/sections/toolsAdded | 单位/公式错误 | 改为 UTF-16 + `div_ceil(4)` + image 4800 + thinking/sections/toolsAdded；更新 6 个测试 |
+| 190 | `pi-agent-core/.../compaction.rs:find_cut_point`/`prepare_compaction` | 任意消息可切、只认 user、message index 当 entry index、默认 8192 | 切点/索引/常量错误 | valid cut points（排除 toolResult）、5 种 turn start、`>=`、entry index 映射、默认 20000 |
+| 191 | `pi-agent-core/.../shell_output.rs` | full-output 临时文件只写滚动尾部；阈值 100KB；`on_chunk` 未调用；ANSI 未剥离 | 缓冲/回调/转义处理缺失 | 保留全量 chunk、50KB 阈值、调用 on_chunk、CSI/OSC 剥离（含跨 chunk 未完成序列） |
+| 192 | `pi-agent-core/.../branch_summarization.rs` | 所有 LLM 失败转成正常摘要；忽略 api_key/signal/headers/env；file_ops 恒空 | 错误吞掉/选项丢失 | 失败返回 Aborted/SummarizationFailed；透传 options；用 extract_file_operations 填充 file_ops |
+| 193 | `pi-coding-agent/core/agent_session.rs:abort` + runtime teardown | abort 不处理 compaction/branch summary、无 abort flag；teardown 不 abort 活动 run | 生命周期遗漏 | 新增 `request_abort`/`agent_run_abort_requested`，abort 调用 compaction/branch abort，teardown 先 abort；ACP/RPC/compact 同步标记 |
+| 194 | `pi-cli/src/args.rs` | `--` 被 catch-all 吞掉；短选项 `-c/-r/-n/-e/-nt/...` 失效；`--append-system-prompt`/`--skill`/`--prompt-template`/`--theme`/`--use-theme`/`--tui-mode`/`--approve` 缺失；`--models` 不拆分；`--thinking max` 被拒 | 参数表不全 | 补齐 v0.87.1 参数表与 `--` 终止符；补测试 |
+| 195 | `pi-cli/src/file_processor.rs` | 总是 resize 却保留原始 mime；忽略 auto_resize_images；hints 丢失 | 本地实现取代共享 process_image | 改用 `image_process::process_image`，使用 processed.mime_type/hints，CLI 默认 auto_resize=false |
+| 196 | `pi-ai/src/providers/openai_responses.rs` + `simple_options.rs` | Responses 固定 `effort:"medium"`；streamSimple 原样转发 reasoning（`off` 被当开启） | 硬编码/缺 clamp | 读 `reasoning_effort` + `thinkingLevelMap`，off 映射 none/undefined；clamp xhigh→high |
+| 197 | `pi-coding-agent/modes/print_mode.rs` | JSON 无 session header、发 start/end 哨兵；text 流式 delta/中间回合 | 输出契约错误 | JSON 首行 header、移除哨兵；text 打印最后 assistant 的 text blocks |
+| 198 | `pi-coding-agent/core/system_prompt.rs:format_skills_for_prompt` | `### Skill` markdown、无 `<location>`、泄露 disableModelInvocation | 用错 formatter | 改为 XML `<available_skills>` + `<location>` + 过滤 hidden；补测试 |
+| 199 | `pi-coding-agent/modes/interactive.rs:/model` | 写死 reasoning=false/contextWindow=128000 | 硬编码常量 | 使用选中模型的 reasoning/context_window |
+| 200 | `pi-coding-agent/modes/interactive.rs` slash dispatch | `/export /import /resume /settings /thinking /changelog /hotkeys /debug` 落到 LLM | 缺分支 | `/thinking`/`/export` 真实实现；其余识别并提示（不发给 LLM） |
+| 201 | `pi-coding-agent/core/tools/truncate.rs:truncate_line`/`format_size` + `pi-agent-core/harness/utils/truncate.rs:truncate_line` | `truncate_line` 按 scalar value 计数；`format_size` 用 Rust 半偶舍入 | UTF-16 vs scalar；JS `toFixed` tie | 改用 `pi_ai::utils::text::{utf16_len,truncate_utf16,round_one_decimal}`；v1.5.0 差分 500/500，v0.87.1 478/500（22 条 lone surrogate，见 DEVIATIONS #38） |
+| 202 | `pi-agent-core/src/agent.rs:create_event_sink` | `AgentEnd` 先置 `is_streaming=false` 并 `notify_waiters`，再 await listeners | idle 早于 listener settle | listener 循环后再清 `is_streaming` 并通知 idle |
+| 203 | `pi-tui/src/fuzzy.rs:match_query` | `score += i as i64 / 10` 整数截断；其余项按 TS 原值 | 分数缩放不一致 | 所有项 ×10（`i`、`*50`、`*20`、`-100`、`-1000`、`+50`），保持 TS 排序 |
+| 204 | `pi-coding-agent/core/settings_manager.rs:output_pad` | `OutputPad` 只接受字符串 "0"/"1"；v0.87.1 用数字 0/1 | serde 表示不匹配 | 自定义 serialize/deserialize 接受数字和字符串，写出数字 |
+| 205 | `pi-coding-agent/core/auth_storage.rs:OAuthCredentials` | 键名 `access_token/refresh_token`；`expires: u128` serde_json 不支持 | 键名/类型不匹配 | rename 为 `access/refresh` + alias 旧名；`expires` 改 `u64` |
+| 206 | `pi-agent-core/harness/session/jsonl_storage.rs:open` | 一行损坏即整体加载失败 | 错误处理过严 | 跳过 malformed 行继续加载（v0.87.1 `parseSessionEntries`） |
+| 207 | `pi-coding-agent/migrations.rs` | OAuth 迁移写嵌套 `credential`；解析失败也 rename；`run_migrations` 无调用点 | 形状/启动遗漏 | 扁平写入 `{type:"oauth",...}`；仅成功时 rename；`pi-cli main` 启动时调用 |
+| 208 | `pi-coding-agent/core/agent_session.rs:_check_compaction` | 只处理 context overflow；`length` 停在下限不恢复 | 缺失分支 | 新增 `is_recoverable_length`（`stopReason=length && usage.output < max_tokens`）并纳入一次 compact-and-retry |
+| 209 | `pi-coding-agent/core/compaction.rs:serialize_conversation` + `agent_session.rs` 摘要 | 摘要用 `## User` 格式、丢 tool-call 参数、不截断 tool result；file lists 不追加、details 恒空 | 格式/追踪遗漏 | 改 v0.87.1 `[User]/[Assistant tool calls]/[Tool result]` + 2000 截断；追加 `<read-files>/<modified-files>` 并写 details |
+| 210 | `pi-ai` 三 provider 终态 | `stopReason=error/pending` 发 `Done` | 终态事件映射错误 | 改为发 `Error` 事件 |
+| 211 | `pi-agent-core/src/agent.rs:run_with_lifecycle_continue` | continue 路径失败直接返回 Err，无 lifecycle 事件 | 缺失失败分支 | 与普通 run 一致调用 `handle_run_failure` |
+| 212 | `pi-agent-core/src/agent_loop.rs:prepareNextTurn` | `"off"` 存成 `Some("off")` | 默认值映射错误 | `"off"` → `None` |
+| 213 | `pi-agent-core/harness/prompt_templates.rs` | 无 frontmatter `name` 即跳过；description 不回退首行 | 用错 name 来源 | 文件名 basename 回退；description 回退首行 60 字符 + "..."；更新测试 |
+| 214 | `pi-agent-core/harness/skill_loader.rs:IgnoreMatcher` | `negated` 计算后未使用，`!keep.md` 仍被忽略；首个匹配即返回 | ignore 语义错误 | 改为 last-match-wins，`!pattern` 反选；补测试 |
+| 215 | `pi-agent-core/src/agent.rs:create_event_sink` | listener 收到的 abort signal 恒为 `None` | 运行信号未传递给 sink | `ActiveRun` 保存 `watch::Receiver`，sink 读取并克隆给每个 listener |
+| 216 | `pi-agent-core/src/types.rs:AfterToolCallResult` | `afterToolCall` 不能覆盖工具结果的 `usage` | 字段缺失 | 新增 `usage: Option<Usage>` 并在 finalize 时应用；extension/harness 路径透传 |
+| 217 | `pi-ai` 三 provider 的 inner stream 函数 | 流中断时 wrapper 新建空 `AssistantMessage`，已累积 content/usage/responseId 丢失 | 错误路径丢弃 partial | inner body 包进 async block，捕获 `Err` 后用同一 `output` 发 `Error`（按 signal 标 aborted/error） |
+| 218 | `pi-coding-agent/core/tools/ls.rs` | 路径不存在/非目录/读失败返回 `Ok` 文本（isError=false）；默认 2000 行上限；stat 失败条目被当文件 | 错误语义/行上限/stat 处理 | 改为 `Err`；`max_lines=usize::MAX`；stat 失败 `continue` |
+| 219 | `pi-coding-agent/core/tools/edit.rs` | 单个 edit 对象未包成 `edits[]`；`access` 只查存在性 | 参数/权限检查 | 新增 `is_single_edit_input` 包裹；`access` 用 read+write open 检查 R_OK\|W_OK |
+| 220 | `pi-coding-agent/core/tools/file_mutation_queue.rs` | canonicalize 失败时用原始路径作 key，`a.txt` 与 `./a.txt` 不串行 | 相对路径未 resolve | 先 resolve 绝对路径再 canonicalize |
+| 221 | `pi-coding-agent/core/tools/output_accumulator.rs` | `finish()` 每个 pending 字节一个 U+FFFD | 解码 flush 语义 | 整个未完成序列一个 U+FFFD |
+| 222 | `pi-coding-agent/core/tools/edit_diff.rs` | 空 normalized `oldText` 返回 0；纯删除不设 `first_changed_line` | 计数/差异行号 | 空模式返回 `utf16_len+1`；Delete 分支设置 `first_changed_line` |
+| 223 | `pi-tui/src/app.rs:handle_key` | `KeyEventKind::Release` 被当 press 处理 | 事件过滤 | 只处理 `Press` |
+| 224 | `pi-tui/src/components/input.rs` + `app.rs` | 非空输入 Up/Down 变左右移动 | 键位语义 | 新增 `move_up`/`move_down` 逻辑行移动 |
+| 225 | `pi-coding-agent/modes/interactive.rs` | Ctrl+J 被 readline keymap 吞掉 | 缺键位 | Ctrl+J 插入换行 |
+| 226 | `pi-tui/src/app.rs:completion_request_after_key` | 补全用整段输入 | 光标位置 | 使用光标前文本 |
+| 227 | `pi-agent-core/harness/skill_loader.rs:load_skills_from_directories` | 多个目录简单 append，同一 realpath 重复加载；无重名诊断 | 缺去重/诊断 | 按 `canonical_path` 去重；同名 skill 记 `name_collision` warning |
+| 228 | `pi-tui/src/app.rs:PageUp/PageDown` | 固定滚动 20 行 | 硬编码行数 | 使用 `body_area.height - 4`（v0.87.1 `PAGE_SCROLL_OVERLAP`） |
+| 229 | `pi-tui/src/components/select_list.rs:handle_key` | 上下不循环、额外绑定 Home/End/j/k、固定翻 5 行 | 键位/循环语义 | 上下在两端循环；移除 v0.87.1 未绑定的键 |
+| 230 | `pi-ai/src/utils/overflow.rs` | `prompt is too long` 漏 `Prompt too long`；缺 DS4/DashScope 模式；Cerebras 无 body 模式对所有 provider 生效 | 正则集合/provider 门控 | 改 `prompt (?:is )?too long`；补 DS4/DashScope；bodyless 仅 `provider == "cerebras"` |
+| 231 | `pi-ai/src/utils/retry.rs` | 字面量 `contains` 缺 `.?` 变体（rate-limit/server-error/connection-refused 等）、缺 `520`/`currently experiencing high demand`/buffer-limit | 分类器实现 | 用 v0.87.1 正则集合 + 大小写不敏感匹配 |
+| 232 | `pi-ai/src/providers/openai.rs:stream_openai` | 无条件 `context.collapsed()`，支持 mid-convo system messages 的模型也丢失就地 system 消息 | 条件分支遗漏 | 按 `supports_mid_convo_system_messages` 决定是否 collapse |
+| 233 | `pi-ai/src/providers/pi_messages.rs` | 请求体发送折叠后的 `Context{systemPrompt,messages,tools}` | wire 形状不匹配 | 用 `normalize_context` 生成 transcript，只发 `context: { messages }`（v0.87.1 `TranscriptContext`） |
+| 234 | `pi-ai/src/providers/openai.rs` + `types.rs` | 硬编码 `thinking_token_budget` 字段名；缺 `vllmPriority` | compat 字段缺失 | 新增 `thinking_token_budget_field`/`vllm_priority`，合并进 resolved compat 并用于请求体 |
+| 235 | `pi-ai/src/providers/openai_responses.rs` reasoning finalize | `summary + content` 拼接；v0.87.1 是 `summary \|\| content \|\| 原值` | 合并规则错误 | 优先 summary，其次 content，二者都空时保留原 thinking |
+| 236 | `pi-ai/src/providers/openai_responses.rs` custom_tool_call done | 收尾 delta 被丢弃 | 缺事件 | 发送 `ToolCallDelta`（`pushToolCallDelta` 语义） |
+| 237 | `pi-ai/src/types.rs:StopReason` | 缺 `"deferred"` | 枚举变体缺失 | 新增 `StopReason::Deferred`（serde lowercase） |
+| 238 | `pi-tui/src/app.rs:visual_lines` | 纯空白文本返回一个空行；v0.87.1 `text.trim() === ""` 返回 `[]` | 空值判定 | 改为 `text.trim().is_empty()` |
+| 239 | `pi-agent-core/types.rs:AgentToolResult` + `agent_loop.rs:finalize` | 缺 `structuredContent`，`afterToolCall` 不能设置/清除 | 字段缺失 | 新增 `structured_content`；`afterToolCall` 覆盖时设置，替换 content 且未提供时清空；64 处构造点补 `None` |
+| 240 | `pi-tui/src/app.rs:visible_width` | 按 char 求和，ZWJ 家庭 emoji = 6；v0.87.1 按 grapheme cluster 算 2 | 宽度单位 | 用 `unicode_segmentation::graphemes`，emoji cluster（emoji base/ZWJ/VS16）整体算 2；补测试 |
+| 241 | `pi-mcp/src/oauth/flow.rs:OAuthAdapter` | 并发 401 follower 忽略 leader 失败并返回 Ok；`Notify` 丢失唤醒可永久挂起 | 共享 promise 语义/唤醒竞态 | 用 `watch` 共享 `RefreshOutcome`，follower 等待并映射同一结果 |
+| 242 | `pi-mcp/src/protocol/content.rs:CallToolResult` | 未知 `content[].type` 使整个 `tools/call` 反序列化失败 | 严格 enum 解析 | 字段级 `deserialize_with`：已知块正常解析，未知降级为 `[unsupported MCP content X]` |
+| 243 | `pi-mcp/src/transports/streamable_http.rs` | `application/json` 响应无大小上限 | 无界 buffering | 按 `max_message_bytes` 流式读取，超限返回错误 |
+| 244 | `pi-mcp/src/transports/stdio.rs:close` | 子进程已退出时不再清理进程组，npx/uvx 孙进程可能存活 | 清理条件过窄 | close 结束时始终 SIGTERM 进程组 |
+| 245 | `pi-coding-agent/src/core/mcp_tools.rs:convert_mcp_result` | resource_link 只输出 `name: uri`；text/binary resource 未解码/保存 | 资源转换缺失 | 对齐 v1.5.0：resource_link 描述、text MIME 解码、binary 存 temp 文件 |
+| 246 | `pi-coding-agent/src/core/mcp_tools.rs:truncate_middle` | marker 为 `... (truncated) ...`；行数用 `lines()` | 格式/计数 | 改为 `…N chars truncated…` + `split('\n')` 计数 |
+| 247 | `pi-coding-agent/src/core/mcp_servers.rs` + `pi-mcp/.../streamable_http.rs` | 描述/错误片段按 scalar 计数；v1.5.0 按 UTF-16 | 计数单位 | 改用 UTF-16 长度/安全截断 |

@@ -8447,114 +8447,19 @@ fn will_retry_after_agent_end(
     false
 }
 
-/// Non-retryable provider-limit error patterns (quota/billing/subscription
-/// exhaustion). Mirrors TS `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN` in
-/// `packages/ai/src/utils/retry.ts`.
-const NON_RETRYABLE_PROVIDER_LIMIT_PATTERNS: &[&str] = &[
-    // OpenCode Go/free-tier limits returned as 429 JSON error types by
-    // OpenCode's Zen API. These are subscription/account limits, not transient
-    // throttles.
-    "GoUsageLimitError",
-    "FreeUsageLimitError",
-    // OpenCode Go subscription-limit text asks users to enable
-    // available-balance usage after rolling/weekly/monthly limits are reached.
-    "Monthly usage limit reached",
-    "available balance",
-    // Generic quota/budget/billing exhaustion.
-    "insufficient_quota",
-    "out of budget",
-    "quota exceeded",
-    "billing",
-];
-
-/// Retryable transient provider/transport error patterns. These are regex
-/// fragments (joined with `|`), mirroring TS `RETRYABLE_PROVIDER_ERROR_PATTERN`:
-/// `.?` allows both `server error` and `server_error` (opencode-go returns the
-/// latter in its JSON `type`/`code` fields), and matching is case-insensitive.
-const RETRYABLE_PROVIDER_ERROR_PATTERNS: &[&str] = &[
-    // Generic provider load, HTTP status, and server-side transient failures.
-    "overloaded",
-    "rate.?limit",
-    "too many requests",
-    "429",
-    "500",
-    "502",
-    "503",
-    "504",
-    "524",
-    "service.?unavailable",
-    "server.?error",
-    "internal.?error",
-    // Wrapper/provider text for transient upstream failures, including
-    // OpenRouter "Provider returned error" responses.
-    "provider.?returned.?error",
-    "exceeded request buffer limit while retrying upstream",
-    // Network, proxy, and fetch transport failures.
-    "network.?error",
-    "connection.?error",
-    "connection.?refused",
-    "connection.?lost",
-    "other side closed",
-    "fetch failed",
-    "getaddrinfo",
-    "ENOTFOUND",
-    "EAI_AGAIN",
-    "upstream.?connect",
-    "reset before headers",
-    "socket hang up",
-    "socket connection was closed",
-    "timed? out",
-    "timeout",
-    "terminated",
-    // WebSocket transports can report close/error text instead of HTTP/fetch
-    // text.
-    "websocket.?closed",
-    "websocket.?error",
-    // Premature stream endings from SDKs and transports.
-    "ended without",
-    "stream ended before message_stop",
-    "stream ended before a terminal response event",
-    "http2 request did not get a response",
-    // Provider-requested retry delay cap failures should flow through the
-    // outer retry policy so callers can surface/abort the backoff.
-    "retry delay",
-    // Explicit retry guidance emitted mid-stream by OpenAI Responses and
-    // Bedrock stream exceptions.
-    "you can retry your request",
-    "try your request again",
-    "please retry your request",
-    // gRPC based providers (e.g. NVIDIA NIM).
-    "ResourceExhausted",
-];
-
-fn compiled_provider_error_pattern(patterns: &[&str]) -> regex::Regex {
-    match regex::Regex::new(&format!("(?i){}", patterns.join("|"))) {
-        Ok(re) => re,
-        Err(e) => panic!("provider error patterns must compile: {e}"),
-    }
-}
-
 /// Whether an error message matches a retryable transient provider/transport
 /// error (quota/billing errors are not retryable). Shared by the agent_end
 /// will_retry computation and `_is_retryable_error`.
 ///
-/// Mirrors TS `isRetryableAssistantError` / `isRetryableProviderError`: regex
-/// patterns with optional separators (`server.?error`) and case-insensitive
-/// matching. The previous literal `contains("server error")` check failed to
-/// match `server_error` (opencode-go's JSON `type`/`code`), so upstream
-/// `server_error` responses were surfaced without any auto-retry — unlike TS.
+/// Delegates to the single classifier in `pi-ai` (TS has one
+/// `isRetryableAssistantError` too). Keeping a second copy here previously let
+/// the agent list drift from the compaction-retry list — it was missing TS
+/// patterns such as `520`/`currently experiencing high demand` — and made
+/// Rust-specific transport wording (`error sending request for url ...`) look
+/// non-retryable, so a transient network drop ended the agent run instead of
+/// being retried.
 fn is_retryable_error_message(error_message: &str) -> bool {
-    use std::sync::LazyLock;
-
-    static NON_RETRYABLE: LazyLock<regex::Regex> =
-        LazyLock::new(|| compiled_provider_error_pattern(NON_RETRYABLE_PROVIDER_LIMIT_PATTERNS));
-    static RETRYABLE: LazyLock<regex::Regex> =
-        LazyLock::new(|| compiled_provider_error_pattern(RETRYABLE_PROVIDER_ERROR_PATTERNS));
-
-    if NON_RETRYABLE.is_match(error_message) {
-        return false;
-    }
-    RETRYABLE.is_match(error_message)
+    pi_agent_core::pi_ai::utils::retry::is_retryable_error_message(error_message)
 }
 
 /// Accumulate token/cost totals from a usage JSON value (matching TS
@@ -9666,6 +9571,22 @@ mod tests {
         assert!(is_retryable_error_message("rate_limit_exceeded"));
         assert!(is_retryable_error_message(
             "Request timed out: no data received for 300s"
+        ));
+        // TS sees undici's "fetch failed"; reqwest reports the same transport
+        // failure as "error sending request for url (...)". Both must retry,
+        // otherwise a dropped request ends the agent run (session
+        // 01a1e1d6-3314-7338-80a7-440f98a04a28, 2026-11-16 09:38/11:42).
+        assert!(is_retryable_error_message(
+            "error sending request for url (https://opencode.ai/zen/go/v1/chat/completions)"
+        ));
+        assert!(is_retryable_error_message(
+            "error sending request for url (https://opencode.ai/zen/go/v1/chat/completions): \
+             error trying to connect: connection closed before message completed"
+        ));
+        // TS v0.87.1 patterns that the former duplicated agent list missed.
+        assert!(is_retryable_error_message("520 Web server is down"));
+        assert!(is_retryable_error_message(
+            "currently experiencing high demand"
         ));
     }
 

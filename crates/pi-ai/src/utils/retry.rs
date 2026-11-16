@@ -94,6 +94,15 @@ const RETRYABLE_PATTERNS: &[&str] = &[
     "connection.?lost",
     "other side closed",
     "fetch failed",
+    // Rust transport wording for the failures above. TS (undici) reports a
+    // dropped network request as "fetch failed", which matches above; reqwest
+    // reports the same class of failure as "error sending request for url
+    // (...)" and hyper as "connection closed before message completed" /
+    // "error reading a body from connection". Without these, a transient
+    // network drop is classified as non-retryable and ends the agent run.
+    "error sending request",
+    "connection closed before message completed",
+    "error reading a body from connection",
     "getaddrinfo",
     "ENOTFOUND",
     "EAI_AGAIN",
@@ -121,19 +130,16 @@ static NON_RETRYABLE_PATTERN: std::sync::LazyLock<Option<Regex>> = std::sync::La
     Regex::new(&format!("(?i){}", NON_RETRYABLE_PATTERNS.join("|"))).ok()
 });
 
-static RETRYABLE_PATTERN: std::sync::LazyLock<Option<Regex>> = std::sync::LazyLock::new(|| {
-    Regex::new(&format!("(?i){}", RETRYABLE_PATTERNS.join("|"))).ok()
-});
+static RETRYABLE_PATTERN: std::sync::LazyLock<Option<Regex>> =
+    std::sync::LazyLock::new(|| Regex::new(&format!("(?i){}", RETRYABLE_PATTERNS.join("|"))).ok());
 
-/// Classifies whether a failed assistant message looks like a transient provider
-/// or transport error (match TS `isRetryableAssistantError`).
-pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
-    if message.stop_reason != StopReason::Error {
-        return false;
-    }
-    let Some(error_message) = message.error_message.as_deref() else {
-        return false;
-    };
+/// Classifies whether an error message looks like a transient provider or
+/// transport error (match TS `isRetryableAssistantError`; quota/billing errors
+/// are never retryable).
+///
+/// The coding agent's agent loop and [`retry_assistant_call`] both use this,
+/// so their classification can never drift apart.
+pub fn is_retryable_error_message(error_message: &str) -> bool {
     if NON_RETRYABLE_PATTERN
         .as_ref()
         .is_some_and(|pattern| pattern.is_match(error_message))
@@ -143,6 +149,18 @@ pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
     RETRYABLE_PATTERN
         .as_ref()
         .is_some_and(|pattern| pattern.is_match(error_message))
+}
+
+/// Classifies whether a failed assistant message looks like a transient provider
+/// or transport error (match TS `isRetryableAssistantError`).
+pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
+    if message.stop_reason != StopReason::Error {
+        return false;
+    }
+    message
+        .error_message
+        .as_deref()
+        .is_some_and(is_retryable_error_message)
 }
 
 /// Run a single assistant-producing call with bounded retry on transient errors
@@ -327,6 +345,31 @@ mod tests {
             "Monthly usage limit reached"
         )));
         assert!(!is_retryable_assistant_error(&ok_msg()));
+    }
+
+    /// Transport failures must retry. TS sees undici's `fetch failed`; reqwest
+    /// and hyper use different wording, so both spellings have to classify.
+    #[test]
+    fn test_is_retryable_error_message_transport_failures() {
+        assert!(is_retryable_error_message("fetch failed"));
+        assert!(is_retryable_error_message(
+            "error sending request for url (https://opencode.ai/zen/go/v1/chat/completions)"
+        ));
+        assert!(is_retryable_error_message(
+            "error sending request for url (https://opencode.ai/zen/go/v1/chat/completions): \
+             error trying to connect: connection closed before message completed"
+        ));
+        assert!(is_retryable_error_message(
+            "error reading a body from connection"
+        ));
+        // Provider load/HTTP statuses added by the TS v0.87.1 list.
+        assert!(is_retryable_error_message("520 Web server is down"));
+        assert!(is_retryable_error_message(
+            "currently experiencing high demand"
+        ));
+        // Quota/billing errors remain terminal.
+        assert!(!is_retryable_error_message("insufficient_quota"));
+        assert!(!is_retryable_error_message("billing issue on account"));
     }
 
     #[tokio::test]
